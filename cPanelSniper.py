@@ -1396,12 +1396,16 @@ Toplu root şifre (results.json → WHM passwd user=root):
                     help="Her hedefte yalnızca createacct (reseller/root şifresi yok)")
     bg.add_argument("--bulk-success-out", default="bulk_accounts_ok.json",
                     help="Başarılı hesaplar JSON (default: bulk_accounts_ok.json)")
+    bg.add_argument("--bulk-fail-out", default="bulk_accounts_fail.json",
+                    help="Başarısız createacct JSON (default: bulk_accounts_fail.json)")
     bg.add_argument("--bulk-passwd", action="store_true",
                     help="Her hedefte root passwd API (--passwd ile yeni şifre)")
     bg.add_argument("--bulk-passwd-success-out", default="bulk_passwd_ok.json",
                     help="passwd başarılı hedefler JSON")
     bg.add_argument("--bulk-passwd-fail-out", default="bulk_passwd_fail.json",
                     help="passwd başarısız hedefler JSON")
+
+    og = p.add_argument_group("Output")
     og.add_argument("-o","--output",   help="Save results to JSON file")
     og.add_argument("--full-session", action="store_true",
                     help="Terminalde tam whostmgrsession göster (cookie kopyalamak için)")
