@@ -6,6 +6,8 @@ SSH yardımcısı — cPanel domain listesi (salt okunur) ve isteğe bağlı uza
 Domain listesi: /etc/trueuserdomains, /etc/userdomains, /etc/domainusers
 
 Uzak dosya: SFTP kullanmadan tek SSH oturumunda `cat > path` ile stdin'den yazar.
+  Tam yol: --write-remote PATH
+  Oturum kullanıcısı $HOME + göreli yol: --write-under-home public_html/dosya.txt
 
 Wordlist satırı (cPanelSniper çıktısı ile uyumlu):
   host:port kullanici sifre
@@ -19,6 +21,7 @@ Yalnızca yetkin olduğunuz sistemlerde kullanın.
 from __future__ import annotations
 
 import argparse
+import posixpath
 import re
 import shlex
 import sys
@@ -90,6 +93,52 @@ def fetch_domains_ssh(host: str, ssh_port: int, user: str, password: str, timeou
         client.close()
 
 
+def safe_relative_under_home(rel: str) -> str:
+    """$HOME altı göreli yol; .. ve mutlak yol reddedilir."""
+    s = rel.strip().replace("\\", "/").lstrip("/")
+    if not s:
+        raise ValueError("Göreli yol boş")
+    if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9_./-]*$", s):
+        raise ValueError(
+            "Göreli yol yalnız harf, rakam, _, ., /, - içerebilir; '..' kullanılamaz"
+        )
+    for p in s.split("/"):
+        if p == "..":
+            raise ValueError("Göreli yolda '..' kullanılamaz")
+    return s
+
+
+def fetch_remote_home(
+    host: str, ssh_port: int, user: str, password: str, timeout: int
+) -> str:
+    """Uzak kabukta oturum kullanıcısının $HOME dizini."""
+    _require_paramiko()
+    client = _ssh_connect(host, ssh_port, user, password, timeout)
+    try:
+        _, stdout, stderr = client.exec_command(
+            "printf %s \"$HOME\"", timeout=timeout
+        )
+        raw = stdout.read().decode("utf-8", errors="replace").strip()
+        err = stderr.read().decode("utf-8", errors="replace")
+        code = stdout.channel.recv_exit_status()
+        if code != 0 or not raw.startswith("/"):
+            raise RuntimeError(
+                f"$HOME okunamadı: {err or raw or 'boş'} (kod={code})"
+            )
+        return posixpath.normpath(raw)
+    finally:
+        client.close()
+
+
+def resolve_under_home(home: str, rel: str) -> str:
+    rel = safe_relative_under_home(rel)
+    full = posixpath.normpath(posixpath.join(home, rel))
+    home_n = posixpath.normpath(home)
+    if full != home_n and not full.startswith(home_n + "/"):
+        raise ValueError("Çözümlenen yol $HOME dışına taşıyor")
+    return full
+
+
 def write_remote_via_stdin(
     host: str,
     ssh_port: int,
@@ -150,7 +199,16 @@ def main():
     p.add_argument(
         "--write-remote",
         metavar="PATH",
-        help="Uzak dosya yolu; içerik --content-file veya --content ile verilir",
+        help="Uzak dosyanın tam yolu; içerik --content-file veya --content ile verilir",
+    )
+    p.add_argument(
+        "--write-under-home",
+        metavar="REL_PATH",
+        help=(
+            "SSH oturum kullanıcısının $HOME altı göreli yol (örn. public_html/x.txt); "
+            "tam uzak yol sunucuda printf \\\"\\$HOME\\\" ile tespit edilir. "
+            "--write-remote ile birlikte kullanılamaz"
+        ),
     )
     p.add_argument(
         "--content-file",
@@ -166,13 +224,20 @@ def main():
     p.add_argument(
         "--also-list-domains",
         action="store_true",
-        help="--write-remote kullanıldığında sonra domain listesini de bas",
+        help="Yazma (--write-remote veya --write-under-home) sonrası domain listesini de bas",
     )
 
     args = p.parse_args()
 
     write_path = (args.write_remote or "").strip()
-    has_write = bool(write_path)
+    write_under = (args.write_under_home or "").strip()
+    if write_path and write_under:
+        print(
+            "--write-remote ile --write-under-home birlikte kullanılamaz.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    has_write = bool(write_path) or bool(write_under)
     if has_write:
         if args.content_file and args.content:
             print("--content-file ile --content birlikte kullanılamaz.", file=sys.stderr)
@@ -187,8 +252,17 @@ def main():
         elif args.content is not None:
             payload = args.content.encode("utf-8")
         else:
-            print("--write-remote için --content-file veya --content gerekli.", file=sys.stderr)
+            print(
+                "--write-remote / --write-under-home için --content-file veya --content gerekli.",
+                file=sys.stderr,
+            )
             sys.exit(1)
+        if write_under:
+            try:
+                safe_relative_under_home(write_under)
+            except ValueError as e:
+                print(f"--write-under-home: {e}", file=sys.stderr)
+                sys.exit(1)
         if len(payload) > 8 * 1024 * 1024:
             print("Uyarı: 8 MiB üzeri içerik; devam ediliyor.", file=sys.stderr)
 
@@ -219,17 +293,29 @@ def main():
         print(f"{'='*60}")
         try:
             if has_write:
+                if write_under:
+                    home = fetch_remote_home(
+                        host, args.ssh_port, user, password, args.timeout
+                    )
+                    target_path = resolve_under_home(home, write_under)
+                else:
+                    target_path = write_path
                 code, err = write_remote_via_stdin(
                     host,
                     args.ssh_port,
                     user,
                     password,
-                    write_path,
+                    target_path,
                     payload,
                     args.timeout,
                     args.chmod,
                 )
-                print(f"  yazıldı: {write_path}  (çıkış {code})")
+                if write_under:
+                    print(
+                        f"  yazıldı: {target_path}  ($HOME={home}, göreli={write_under})  (çıkış {code})"
+                    )
+                else:
+                    print(f"  yazıldı: {target_path}  (çıkış {code})")
                 if err.strip():
                     print(err.rstrip(), file=sys.stderr)
                 if args.also_list_domains:
