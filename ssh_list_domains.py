@@ -291,13 +291,14 @@ def deploy_to_all_roots(
     timeout: int,
     chmod_mode: Optional[str] = None,
     domain_filter: Optional[str] = None,
-) -> dict[str, bool]:
+) -> tuple[dict[str, bool], list[str]]:
     """
     Verilen domain→root dict'indeki tüm dizinlere dosya yazar.
     domain_filter verilirse sadece o domain'e yazar.
-    Dönen: {domain: başarılı_mı}
+    Dönen: ({domain: başarılı_mı}, [başarılı_url_listesi])
     """
     results = {}
+    success_urls: list[str] = []
     targets = roots
 
     if domain_filter:
@@ -307,7 +308,7 @@ def deploy_to_all_roots(
             print(f"  [!] '{domain_filter}' bulunamadı. Mevcut domainler:", file=sys.stderr)
             for d in sorted(roots.keys()):
                 print(f"      - {d}", file=sys.stderr)
-            return {}
+            return {}, []
 
     for domain, root_path in sorted(targets.items()):
         remote_file = posixpath.join(root_path, filename)
@@ -317,8 +318,11 @@ def deploy_to_all_roots(
                 remote_file, data, timeout, chmod_mode
             )
             if code == 0:
+                url = f"https://{domain}/{filename}"
                 print(f"  [+] {domain} → {remote_file} (OK)")
+                print(f"      URL: {url}")
                 results[domain] = True
+                success_urls.append(url)
             else:
                 print(f"  [-] {domain} → {remote_file} (HATA, kod={code})")
                 if err.strip():
@@ -328,7 +332,7 @@ def deploy_to_all_roots(
             print(f"  [-] {domain} → {remote_file} (İSTİSNA: {e})", file=sys.stderr)
             results[domain] = False
 
-    return results
+    return results, success_urls
 
 
 def safe_relative_under_home(rel: str) -> str:
@@ -457,6 +461,12 @@ def main():
     )
     deploy.add_argument("--content", help="Deploy edilecek satır içi metin (UTF-8)")
     deploy.add_argument("--chmod", metavar="MODE", help="Yazdıktan sonra chmod (örn. 644)")
+    deploy.add_argument(
+        "--output",
+        metavar="FILE",
+        default="deploy_success.txt",
+        help="Başarılı deploy URL'lerinin kaydedileceği dosya (varsayılan: deploy_success.txt)",
+    )
 
     legacy = p.add_argument_group("Eski uyumluluk (tek dosya yazma)")
     legacy.add_argument("--write-remote", metavar="PATH", help="Tam uzak yol ile dosya yaz")
@@ -534,6 +544,8 @@ def main():
         p.print_help()
         sys.exit(1)
 
+    all_success_urls: list[str] = []
+
     for host, user, password in jobs:
         print(f"\n{'='*60}")
         print(f"  SSH {user}@{host}:{args.ssh_port}")
@@ -560,12 +572,13 @@ def main():
                     print(f"\n  [*] Dosya deploy ediliyor: {args.filename}")
                     print(f"  [*] Hedef: {'TÜM domainler' if args.deploy_to_all else args.deploy_to_domain}")
                     print()
-                    results = deploy_to_all_roots(
+                    results, urls = deploy_to_all_roots(
                         host, args.ssh_port, user, password,
                         roots, args.filename, payload, args.timeout,
                         chmod_mode=args.chmod,
                         domain_filter=args.deploy_to_domain,
                     )
+                    all_success_urls.extend(urls)
                     success = sum(1 for v in results.values() if v)
                     fail = sum(1 for v in results.values() if not v)
                     print(f"\n  Sonuç: {success} başarılı, {fail} başarısız (toplam {len(results)})")
@@ -606,6 +619,18 @@ def main():
 
         except Exception as e:
             print(f"  [!] Hata: {e}", file=sys.stderr)
+
+    if all_success_urls and has_deploy:
+        output_file = args.output
+        try:
+            with open(output_file, "a", encoding="utf-8") as f:
+                for url in all_success_urls:
+                    f.write(url + "\n")
+            print(f"\n{'='*60}")
+            print(f"  [✓] {len(all_success_urls)} başarılı URL kaydedildi: {output_file}")
+            print(f"{'='*60}")
+        except OSError as e:
+            print(f"  [!] Çıktı dosyası yazılamadı: {e}", file=sys.stderr)
 
 
 if __name__ == "__main__":

