@@ -18,15 +18,15 @@ define('ALLOW_NEW_FOLDER',true);
 define('ALLOW_SHELL',     true);   // Shell'i kapatmak için false yapın
 define('SHELL_HISTORY',   50);
 
-$EDITABLE_EXTENSIONS = [
+$EDITABLE_EXTENSIONS = array(
     'txt','php','html','htm','css','js','json','xml','md',
     'yaml','yml','ini','env','sh','py','sql','htaccess','conf','log','toml','tsx','ts',
-];
+);
 
 // ============================================================
 // YARDIMCI FONKSİYONLAR
 // ============================================================
-function safe_path(string $path): string|false {
+function safe_path($path) {
     $real = realpath($path);
     if ($real === false) {
         $real = realpath(dirname($path));
@@ -37,59 +37,59 @@ function safe_path(string $path): string|false {
     return $real;
 }
 
-function rel_path(string $abs): string {
+function rel_path($abs) {
     return ltrim(str_replace(realpath(ROOT_DIR), '', $abs), DIRECTORY_SEPARATOR . '/');
 }
 
-function format_size(int $bytes): string {
+function format_size($bytes) {
     if ($bytes === 0) return '0 B';
-    $units = ['B','KB','MB','GB','TB'];
+    $units = array('B','KB','MB','GB','TB');
     $i = floor(log($bytes, 1024));
     return round($bytes / pow(1024, $i), 2) . ' ' . $units[$i];
 }
 
-function is_editable(string $file): bool {
+function is_editable($file) {
     global $EDITABLE_EXTENSIONS;
     return in_array(strtolower(pathinfo($file, PATHINFO_EXTENSION)), $EDITABLE_EXTENSIONS);
 }
 
-function icon_for(string $path): string {
+function icon_for($path) {
     if (is_dir($path)) return '📁';
     $ext = strtolower(pathinfo($path, PATHINFO_EXTENSION));
-    $map = [
+    $map = array(
         'php'=>'🐘','html'=>'🌐','htm'=>'🌐','css'=>'🎨','js'=>'⚡','ts'=>'⚡','tsx'=>'⚡',
         'json'=>'📋','xml'=>'📋','md'=>'📝','txt'=>'📄','sql'=>'🗄️',
         'jpg'=>'🖼️','jpeg'=>'🖼️','png'=>'🖼️','gif'=>'🖼️','webp'=>'🖼️','svg'=>'🖼️',
         'pdf'=>'📕','zip'=>'📦','tar'=>'📦','gz'=>'📦','rar'=>'📦',
-        'mp4'=>'🎬','mp3'=>'🎵','py'=>'🐍','sh'=>'⚙️','log'=>'📃',
-    ];
-    return $map[$ext] ?? '📄';
+        'mp4'=>'🎬','mp3'=>'🎵','py'=>'🐍','sh'=>'⚙️','log'=>'📃'
+    );
+    return isset($map[$ext]) ? $map[$ext] : '📄';
 }
 
-function shell_exec_safe(string $cmd, string $cwd): array {
-    $blocked = ['rm -rf /','mkfs','dd if=',':(){ :|:& };:','chmod -R 777 /'];
+function shell_exec_safe($cmd, $cwd) {
+    $blocked = array('rm -rf /','mkfs','dd if=',':(){ :|:& };:','chmod -R 777 /'];
     foreach ($blocked as $b) {
         if (stripos($cmd, $b) !== false)
-            return ['output'=>"⛔ Engellendi: Güvenlik politikası bu komutu reddetti.\n",'code'=>1];
+            return array('output'=>"⛔ Engellendi: Güvenlik politikası bu komutu reddetti.\n",'code'=>1];
     }
-    $descriptors = [0=>['pipe','r'],1=>['pipe','w'],2=>['pipe','w']];
-    $env  = array_merge($_ENV, ['TERM'=>'xterm-256color','LANG'=>'en_US.UTF-8']);
+    $descriptors = array(0=>array('pipe','r'),1=>array('pipe','w'),2=>array('pipe','w')];
+    $env  = array_merge($_ENV, array('TERM'=>'xterm-256color','LANG'=>'en_US.UTF-8'));
     $proc = proc_open($cmd, $descriptors, $pipes, $cwd, $env);
-    if (!is_resource($proc)) return ['output'=>"Komut başlatılamadı.\n",'code'=>-1];
+    if (!is_resource($proc)) return array('output'=>"Komut başlatılamadı.\n",'code'=>-1];
     fclose($pipes[0]);
     $out  = stream_get_contents($pipes[1]);
     $err  = stream_get_contents($pipes[2]);
     fclose($pipes[1]); fclose($pipes[2]);
     $code = proc_close($proc);
-    return ['output'=>$out.$err,'code'=>$code];
+    return array('output'=>$out.$err,'code'=>$code];
 }
 
 // ============================================================
 // AJAX İŞLEYİCİ
 // ============================================================
-$action   = $_REQUEST['action'] ?? '';
+$action   = isset($_REQUEST['action']) ? $_REQUEST['action'] : '';
 $is_ajax  = isset($_SERVER['HTTP_X_REQUESTED_WITH']) ||
-            in_array($action,['list','read','save','delete','rename','newfolder','newfile','upload','shell']);
+            in_array($action,array('list','read','save','delete','rename','newfolder','newfile','upload','shell'));
 
 if ($is_ajax && $action) {
     header('Content-Type: application/json; charset=utf-8');
@@ -97,43 +97,43 @@ if ($is_ajax && $action) {
         switch ($action) {
 
             case 'list':
-                $dir = safe_path(ROOT_DIR.'/'.($_GET['path']??''));
+                $dir = safe_path(ROOT_DIR.'/'.(isset($_GET['path']) ? $_GET['path'] : ''));
                 if (!$dir||!is_dir($dir)) throw new Exception('Geçersiz dizin');
                 $items=[];
                 foreach(scandir($dir) as $e){
                     if($e==='.'||($e==='..'&&$dir===realpath(ROOT_DIR))) continue;
                     $full=$dir.DIRECTORY_SEPARATOR.$e;
-                    $items[]=['name'=>$e,'path'=>rel_path($full),'is_dir'=>is_dir($full),
+                    $items[]=array('name'=>$e,'path'=>rel_path($full),'is_dir'=>is_dir($full),
                         'size'=>is_file($full)?format_size(filesize($full)):'-',
                         'mtime'=>date('d.m.Y H:i',filemtime($full)),
-                        'icon'=>icon_for($full),'editable'=>is_file($full)&&is_editable($full)];
+                        'icon'=>icon_for($full),'editable'=>is_file($full)&&is_editable($full));
                 }
-                usort($items,fn($a,$b)=>($b['is_dir']-$a['is_dir'])?:strcmp($a['name'],$b['name']));
-                echo json_encode(['ok'=>true,'items'=>$items,'path'=>rel_path($dir)]);
+                usort($items,function($a,$b){ $d=$b['is_dir']-$a['is_dir']; return $d ? $d : strcmp($a['name'],$b['name']); });
+                echo json_encode(array('ok'=>true,'items'=>$items,'path'=>rel_path($dir)));
                 break;
 
             case 'read':
                 if(!ALLOW_EDIT) throw new Exception('İzin yok');
-                $file=safe_path(ROOT_DIR.'/'.($_GET['path']??''));
+                $file=safe_path(ROOT_DIR.'/'.(isset($_GET['path']) ? $_GET['path'] : ''));
                 if(!$file||!is_file($file)) throw new Exception('Dosya bulunamadı');
                 if(!is_editable($file)) throw new Exception('Bu tür düzenlenemez');
-                echo json_encode(['ok'=>true,'content'=>file_get_contents($file),'path'=>rel_path($file)]);
+                echo json_encode(array('ok'=>true,'content'=>file_get_contents($file),'path'=>rel_path($file)));
                 break;
 
             case 'save':
                 if(!ALLOW_EDIT) throw new Exception('İzin yok');
                 $data=json_decode(file_get_contents('php://input'),true);
-                $file=safe_path(ROOT_DIR.'/'.($data['path']??''));
+                $file=safe_path(ROOT_DIR.'/'.(isset($data['path']) ? $data['path'] : ''));
                 if(!$file) throw new Exception('Geçersiz yol');
                 if(!is_editable($file)) throw new Exception('Bu tür düzenlenemez');
-                file_put_contents($file,$data['content']??'');
-                echo json_encode(['ok'=>true,'msg'=>'Kaydedildi ✓']);
+                file_put_contents($file,isset($data['content']) ? $data['content'] : '');
+                echo json_encode(array('ok'=>true,'msg'=>'Kaydedildi ✓'));
                 break;
 
             case 'delete':
                 if(!ALLOW_DELETE) throw new Exception('İzin yok');
                 $data=json_decode(file_get_contents('php://input'),true);
-                $target=safe_path(ROOT_DIR.'/'.($data['path']??''));
+                $target=safe_path(ROOT_DIR.'/'.(isset($data['path']) ? $data['path'] : ''));
                 if(!$target) throw new Exception('Geçersiz yol');
                 if($target===realpath(ROOT_DIR)) throw new Exception('Kök silinemez');
                 if(is_dir($target)){
@@ -141,87 +141,87 @@ if ($is_ajax && $action) {
                     foreach($it as $f) $f->isDir()?rmdir($f):unlink($f);
                     rmdir($target);
                 } else unlink($target);
-                echo json_encode(['ok'=>true,'msg'=>'Silindi ✓']);
+                echo json_encode(array('ok'=>true,'msg'=>'Silindi ✓'));
                 break;
 
             case 'rename':
                 if(!ALLOW_RENAME) throw new Exception('İzin yok');
                 $data=json_decode(file_get_contents('php://input'),true);
-                $old=safe_path(ROOT_DIR.'/'.($data['path']??''));
-                $newname=basename($data['newname']??'');
+                $old=safe_path(ROOT_DIR.'/'.(isset($data['path']) ? $data['path'] : ''));
+                $newname=basename(isset($data['newname']) ? $data['newname'] : '');
                 if(!$old||!$newname) throw new Exception('Geçersiz parametre');
                 $new=safe_path(dirname($old).'/'.$newname);
                 if(!$new) throw new Exception('Geçersiz isim');
                 if(file_exists($new)) throw new Exception('Bu isim zaten var');
                 rename($old,$new);
-                echo json_encode(['ok'=>true,'msg'=>'Yeniden adlandırıldı ✓']);
+                echo json_encode(array('ok'=>true,'msg'=>'Yeniden adlandırıldı ✓'));
                 break;
 
             case 'newfolder':
                 if(!ALLOW_NEW_FOLDER) throw new Exception('İzin yok');
                 $data=json_decode(file_get_contents('php://input'),true);
-                $parent=safe_path(ROOT_DIR.'/'.($data['path']??''));
-                $name=basename($data['name']??'');
+                $parent=safe_path(ROOT_DIR.'/'.(isset($data['path']) ? $data['path'] : ''));
+                $name=basename(isset($data['name']) ? $data['name'] : '');
                 if(!$parent||!$name) throw new Exception('Geçersiz parametre');
                 $new=safe_path($parent.'/'.$name);
                 if(!$new) throw new Exception('Geçersiz isim');
                 if(file_exists($new)) throw new Exception('Zaten var');
                 mkdir($new,0755);
-                echo json_encode(['ok'=>true,'msg'=>'Klasör oluşturuldu ✓']);
+                echo json_encode(array('ok'=>true,'msg'=>'Klasör oluşturuldu ✓'));
                 break;
 
             case 'newfile':
                 if(!ALLOW_NEW_FILE) throw new Exception('İzin yok');
                 $data=json_decode(file_get_contents('php://input'),true);
-                $parent=safe_path(ROOT_DIR.'/'.($data['path']??''));
-                $name=basename($data['name']??'');
+                $parent=safe_path(ROOT_DIR.'/'.(isset($data['path']) ? $data['path'] : ''));
+                $name=basename(isset($data['name']) ? $data['name'] : '');
                 if(!$parent||!$name) throw new Exception('Geçersiz parametre');
                 $new=safe_path($parent.'/'.$name);
                 if(!$new) throw new Exception('Geçersiz isim');
                 if(file_exists($new)) throw new Exception('Zaten var');
                 file_put_contents($new,'');
-                echo json_encode(['ok'=>true,'msg'=>'Dosya oluşturuldu ✓']);
+                echo json_encode(array('ok'=>true,'msg'=>'Dosya oluşturuldu ✓'));
                 break;
 
             case 'upload':
                 if(!ALLOW_UPLOAD) throw new Exception('İzin yok');
-                $dir=safe_path(ROOT_DIR.'/'.($_POST['path']??''));
+                $dir=safe_path(ROOT_DIR.'/'.(isset($_POST['path']) ? $_POST['path'] : ''));
                 if(!$dir||!is_dir($dir)) throw new Exception('Geçersiz dizin');
                 $results=[];
                 foreach($_FILES['files']['name'] as $i=>$fname){
-                    if($_FILES['files']['error'][$i]!==UPLOAD_ERR_OK){$results[]=['name'=>$fname,'ok'=>false];continue;}
+                    if($_FILES['files']['error'][$i]!==UPLOAD_ERR_OK){$results[]=array('name'=>$fname,'ok'=>false);continue;}
                     $dest=safe_path($dir.'/'.basename($fname));
-                    if(!$dest){$results[]=['name'=>$fname,'ok'=>false];continue;}
+                    if(!$dest){$results[]=array('name'=>$fname,'ok'=>false);continue;}
                     move_uploaded_file($_FILES['files']['tmp_name'][$i],$dest);
-                    $results[]=['name'=>$fname,'ok'=>true];
+                    $results[]=array('name'=>$fname,'ok'=>true);
                 }
-                echo json_encode(['ok'=>true,'results'=>$results]);
+                echo json_encode(array('ok'=>true,'results'=>$results));
                 break;
 
             case 'shell':
                 if(!ALLOW_SHELL) throw new Exception('Shell devre dışı');
                 $data=json_decode(file_get_contents('php://input'),true);
-                $cmd=trim($data['cmd']??'');
-                $cwd=$data['cwd']??ROOT_DIR;
-                $cwd_real=realpath($cwd)?:ROOT_DIR;
+                $cmd=trim(isset($data['cmd']) ? $data['cmd'] : '');
+                $cwd=isset($data['cwd']) ? $data['cwd'] : ROOT_DIR;
+                $cwd_real_tmp=realpath($cwd); $cwd_real=$cwd_real_tmp?$cwd_real_tmp:ROOT_DIR;
 
-                if(empty($cmd)){echo json_encode(['ok'=>true,'output'=>'','cwd'=>$cwd_real]);break;}
+                if(empty($cmd)){echo json_encode(array('ok'=>true,'output'=>'','cwd'=>$cwd_real));break;}
 
                 // cd komutunu özel işle
                 if(preg_match('/^cd\s*(.*)?$/i',$cmd,$m)){
-                    $target=trim($m[1]??'');
+                    $target=trim(isset($m[1]) ? $m[1] : '');
                     if($target===''||$target==='~') $new_cwd=ROOT_DIR;
-                    else $new_cwd=realpath($cwd_real.'/'.$target)?:realpath($target);
+                    else { $tmp1=realpath($cwd_real.'/'.$target); $tmp2=realpath($target); $new_cwd=$tmp1?$tmp1:$tmp2; }
                     if(!$new_cwd||strpos($new_cwd,realpath(ROOT_DIR))!==0){
                         echo json_encode(['ok'=>true,'output'=>"bash: cd: İzin reddedildi\n",'cwd'=>$cwd_real,'code'=>1]);
                         break;
                     }
-                    echo json_encode(['ok'=>true,'output'=>'',$cwd=>$new_cwd,'cwd'=>$new_cwd,'code'=>0]);
+                    echo json_encode(array('ok'=>true,'output'=>'','cwd'=>$new_cwd,'code'=>0));
                     break;
                 }
 
                 $result=shell_exec_safe($cmd,$cwd_real);
-                echo json_encode(['ok'=>true,'output'=>$result['output'],'code'=>$result['code'],'cwd'=>$cwd_real]);
+                echo json_encode(array('ok'=>true,'output'=>$result['output'],'code'=>$result['code'],'cwd'=>$cwd_real));
                 break;
 
             default:
@@ -229,7 +229,7 @@ if ($is_ajax && $action) {
         }
     } catch(Exception $e){
         http_response_code(400);
-        echo json_encode(['ok'=>false,'msg'=>$e->getMessage()]);
+        echo json_encode(array('ok'=>false,'msg'=>$e->getMessage()));
     }
     exit;
 }
@@ -238,8 +238,8 @@ if ($is_ajax && $action) {
 // HTML
 // ============================================================
 $shell_ok = ALLOW_SHELL && function_exists('proc_open');
-$hostname = gethostname()?:'server';
-$whoami   = trim(shell_exec('whoami')?:'www-data');
+$hostname = gethostname() ? gethostname() : 'server';
+$whoami   = trim(shell_exec('whoami')) ? trim(shell_exec('whoami')) : 'www-data';
 $root_real= realpath(ROOT_DIR);
 ?><!DOCTYPE html>
 <html lang="tr">
