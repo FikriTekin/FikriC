@@ -1,781 +1,611 @@
 <?php
-/**
- * PHP Dosya Yöneticisi + Shell Terminal
- * Tek dosya — Listeleme, Düzenleme, Silme, Yeniden Adlandırma, Yükleme, Shell
- */
+error_reporting(0);
 
-// ============================================================
-// YAPILANDIRMA
-// ============================================================
-define('ROOT_DIR',        __DIR__);
-define('APP_TITLE',       'Dosya Yöneticisi');
-define('ALLOW_DELETE',    true);
-define('ALLOW_EDIT',      true);
-define('ALLOW_RENAME',    true);
-define('ALLOW_UPLOAD',    true);
-define('ALLOW_NEW_FILE',  true);
-define('ALLOW_NEW_FOLDER',true);
-define('ALLOW_SHELL',     true);   // Shell'i kapatmak için false yapın
-define('SHELL_HISTORY',   50);
+$ROOT = realpath(dirname(__FILE__));
 
-$EDITABLE_EXTENSIONS = array(
-    'txt','php','html','htm','css','js','json','xml','md',
-    'yaml','yml','ini','env','sh','py','sql','htaccess','conf','log','toml','tsx','ts',
-);
-
-// ============================================================
-// YARDIMCI FONKSİYONLAR
-// ============================================================
-function safe_path($path) {
+// ---- YARDIMCI ----
+function safe($path) {
+    global $ROOT;
     $real = realpath($path);
     if ($real === false) {
         $real = realpath(dirname($path));
         if ($real === false) return false;
-        $real .= DIRECTORY_SEPARATOR . basename($path);
+        $real = $real . DIRECTORY_SEPARATOR . basename($path);
     }
-    if (strpos($real, realpath(ROOT_DIR)) !== 0) return false;
+    if (strpos($real, $ROOT) !== 0) return false;
     return $real;
 }
 
-function rel_path($abs) {
-    return ltrim(str_replace(realpath(ROOT_DIR), '', $abs), DIRECTORY_SEPARATOR . '/');
+function rel($abs) {
+    global $ROOT;
+    return ltrim(str_replace($ROOT, '', $abs), '/\\');
 }
 
-function format_size($bytes) {
-    if ($bytes === 0) return '0 B';
-    $units = array('B','KB','MB','GB','TB');
-    $i = floor(log($bytes, 1024));
-    return round($bytes / pow(1024, $i), 2) . ' ' . $units[$i];
+function fsize($b) {
+    if ($b < 1024) return $b . ' B';
+    if ($b < 1048576) return round($b/1024, 1) . ' KB';
+    if ($b < 1073741824) return round($b/1048576, 1) . ' MB';
+    return round($b/1073741824, 1) . ' GB';
 }
 
-function is_editable($file) {
-    global $EDITABLE_EXTENSIONS;
-    return in_array(strtolower(pathinfo($file, PATHINFO_EXTENSION)), $EDITABLE_EXTENSIONS);
-}
+// ---- EYLEMLER ----
+$act = isset($_REQUEST['act']) ? $_REQUEST['act'] : '';
 
-function icon_for($path) {
-    if (is_dir($path)) return '📁';
-    $ext = strtolower(pathinfo($path, PATHINFO_EXTENSION));
-    $map = array(
-        'php'=>'🐘','html'=>'🌐','htm'=>'🌐','css'=>'🎨','js'=>'⚡','ts'=>'⚡','tsx'=>'⚡',
-        'json'=>'📋','xml'=>'📋','md'=>'📝','txt'=>'📄','sql'=>'🗄️',
-        'jpg'=>'🖼️','jpeg'=>'🖼️','png'=>'🖼️','gif'=>'🖼️','webp'=>'🖼️','svg'=>'🖼️',
-        'pdf'=>'📕','zip'=>'📦','tar'=>'📦','gz'=>'📦','rar'=>'📦',
-        'mp4'=>'🎬','mp3'=>'🎵','py'=>'🐍','sh'=>'⚙️','log'=>'📃'
-    );
-    return isset($map[$ext]) ? $map[$ext] : '📄';
-}
-
-function shell_exec_safe($cmd, $cwd) {
-    $blocked = array('rm -rf /','mkfs','dd if=',':(){ :|:& };:','chmod -R 777 /'];
-    foreach ($blocked as $b) {
-        if (stripos($cmd, $b) !== false)
-            return array('output'=>"⛔ Engellendi: Güvenlik politikası bu komutu reddetti.\n",'code'=>1];
+if ($act == 'list') {
+    $p   = isset($_GET['p']) ? $_GET['p'] : '';
+    $dir = safe($ROOT . '/' . $p);
+    if (!$dir || !is_dir($dir)) { echo 'ERR:Gecersiz dizin'; exit; }
+    $out = array();
+    $entries = scandir($dir);
+    foreach ($entries as $e) {
+        if ($e == '.') continue;
+        if ($e == '..' && $dir == $ROOT) continue;
+        $full = $dir . DIRECTORY_SEPARATOR . $e;
+        $out[] = (is_dir($full) ? 'D' : 'F') . '|' . $e . '|' . rel($full) . '|' . (is_file($full) ? fsize(filesize($full)) : '') . '|' . date('d.m.Y H:i', filemtime($full));
     }
-    $descriptors = array(0=>array('pipe','r'),1=>array('pipe','w'),2=>array('pipe','w')];
-    $env  = array_merge($_ENV, array('TERM'=>'xterm-256color','LANG'=>'en_US.UTF-8'));
-    $proc = proc_open($cmd, $descriptors, $pipes, $cwd, $env);
-    if (!is_resource($proc)) return array('output'=>"Komut başlatılamadı.\n",'code'=>-1];
+    echo implode("\n", $out);
+    exit;
+}
+
+if ($act == 'read') {
+    $file = safe($ROOT . '/' . (isset($_GET['p']) ? $_GET['p'] : ''));
+    if (!$file || !is_file($file)) { echo 'ERR:Dosya bulunamadi'; exit; }
+    echo file_get_contents($file);
+    exit;
+}
+
+if ($act == 'save') {
+    $file    = safe($ROOT . '/' . (isset($_POST['p']) ? $_POST['p'] : ''));
+    $content = isset($_POST['content']) ? $_POST['content'] : '';
+    if (!$file) { echo 'ERR:Gecersiz yol'; exit; }
+    file_put_contents($file, $content);
+    echo 'OK';
+    exit;
+}
+
+if ($act == 'delete') {
+    $target = safe($ROOT . '/' . (isset($_POST['p']) ? $_POST['p'] : ''));
+    if (!$target || $target == $ROOT) { echo 'ERR:Gecersiz'; exit; }
+    if (is_dir($target)) {
+        $it = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($target, FilesystemIterator::SKIP_DOTS), RecursiveIteratorIterator::CHILD_FIRST);
+        foreach ($it as $f) {
+            if ($f->isDir()) rmdir($f->getRealPath());
+            else unlink($f->getRealPath());
+        }
+        rmdir($target);
+    } else {
+        unlink($target);
+    }
+    echo 'OK';
+    exit;
+}
+
+if ($act == 'rename') {
+    $old     = safe($ROOT . '/' . (isset($_POST['p']) ? $_POST['p'] : ''));
+    $newname = basename(isset($_POST['newname']) ? $_POST['newname'] : '');
+    if (!$old || !$newname) { echo 'ERR:Gecersiz'; exit; }
+    $new = safe(dirname($old) . '/' . $newname);
+    if (!$new) { echo 'ERR:Gecersiz isim'; exit; }
+    if (file_exists($new)) { echo 'ERR:Bu isim zaten var'; exit; }
+    rename($old, $new);
+    echo 'OK';
+    exit;
+}
+
+if ($act == 'mkdir') {
+    $parent = safe($ROOT . '/' . (isset($_POST['p']) ? $_POST['p'] : ''));
+    $name   = basename(isset($_POST['name']) ? $_POST['name'] : '');
+    if (!$parent || !$name) { echo 'ERR:Gecersiz'; exit; }
+    $new = $parent . DIRECTORY_SEPARATOR . $name;
+    if (file_exists($new)) { echo 'ERR:Zaten var'; exit; }
+    mkdir($new, 0755);
+    echo 'OK';
+    exit;
+}
+
+if ($act == 'mkfile') {
+    $parent = safe($ROOT . '/' . (isset($_POST['p']) ? $_POST['p'] : ''));
+    $name   = basename(isset($_POST['name']) ? $_POST['name'] : '');
+    if (!$parent || !$name) { echo 'ERR:Gecersiz'; exit; }
+    $new = $parent . DIRECTORY_SEPARATOR . $name;
+    if (file_exists($new)) { echo 'ERR:Zaten var'; exit; }
+    file_put_contents($new, '');
+    echo 'OK';
+    exit;
+}
+
+if ($act == 'upload') {
+    $dir = safe($ROOT . '/' . (isset($_POST['p']) ? $_POST['p'] : ''));
+    if (!$dir || !is_dir($dir)) { echo 'ERR:Gecersiz dizin'; exit; }
+    $ok = 0;
+    foreach ($_FILES as $file) {
+        if (is_array($file['name'])) {
+            foreach ($file['name'] as $i => $fname) {
+                if ($file['error'][$i] == 0) {
+                    move_uploaded_file($file['tmp_name'][$i], $dir . DIRECTORY_SEPARATOR . basename($fname));
+                    $ok++;
+                }
+            }
+        } else {
+            if ($file['error'] == 0) {
+                move_uploaded_file($file['tmp_name'], $dir . DIRECTORY_SEPARATOR . basename($file['name']));
+                $ok++;
+            }
+        }
+    }
+    echo 'OK:' . $ok;
+    exit;
+}
+
+if ($act == 'shell') {
+    $cmd = isset($_POST['cmd']) ? trim($_POST['cmd']) : '';
+    $cwd = isset($_POST['cwd']) ? $_POST['cwd'] : $ROOT;
+    $cwd = realpath($cwd);
+    if (!$cwd || strpos($cwd, $ROOT) !== 0) $cwd = $ROOT;
+
+    if (empty($cmd)) { echo 'CWD:' . $cwd; exit; }
+
+    // cd komutu
+    if (preg_match('/^cd\s+(.+)$/', $cmd, $m)) {
+        $target = trim($m[1]);
+        if ($target == '~' || $target == '') $new = $ROOT;
+        else $new = realpath($cwd . '/' . $target);
+        if ($new && strpos($new, $ROOT) === 0) {
+            echo 'CWD:' . $new;
+        } else {
+            echo "bash: cd: Erisim reddedildi\nCWD:" . $cwd;
+        }
+        exit;
+    }
+
+    $desc = array(0 => array('pipe','r'), 1 => array('pipe','w'), 2 => array('pipe','w'));
+    $proc = proc_open($cmd, $desc, $pipes, $cwd);
+    if (!is_resource($proc)) { echo "Komut calistirulamadi\nCWD:" . $cwd; exit; }
     fclose($pipes[0]);
     $out  = stream_get_contents($pipes[1]);
     $err  = stream_get_contents($pipes[2]);
     fclose($pipes[1]); fclose($pipes[2]);
-    $code = proc_close($proc);
-    return array('output'=>$out.$err,'code'=>$code];
-}
-
-// ============================================================
-// AJAX İŞLEYİCİ
-// ============================================================
-$action   = isset($_REQUEST['action']) ? $_REQUEST['action'] : '';
-$is_ajax  = isset($_SERVER['HTTP_X_REQUESTED_WITH']) ||
-            in_array($action,array('list','read','save','delete','rename','newfolder','newfile','upload','shell'));
-
-if ($is_ajax && $action) {
-    header('Content-Type: application/json; charset=utf-8');
-    try {
-        switch ($action) {
-
-            case 'list':
-                $dir = safe_path(ROOT_DIR.'/'.(isset($_GET['path']) ? $_GET['path'] : ''));
-                if (!$dir||!is_dir($dir)) throw new Exception('Geçersiz dizin');
-                $items=[];
-                foreach(scandir($dir) as $e){
-                    if($e==='.'||($e==='..'&&$dir===realpath(ROOT_DIR))) continue;
-                    $full=$dir.DIRECTORY_SEPARATOR.$e;
-                    $items[]=array('name'=>$e,'path'=>rel_path($full),'is_dir'=>is_dir($full),
-                        'size'=>is_file($full)?format_size(filesize($full)):'-',
-                        'mtime'=>date('d.m.Y H:i',filemtime($full)),
-                        'icon'=>icon_for($full),'editable'=>is_file($full)&&is_editable($full));
-                }
-                usort($items,function($a,$b){ $d=$b['is_dir']-$a['is_dir']; return $d ? $d : strcmp($a['name'],$b['name']); });
-                echo json_encode(array('ok'=>true,'items'=>$items,'path'=>rel_path($dir)));
-                break;
-
-            case 'read':
-                if(!ALLOW_EDIT) throw new Exception('İzin yok');
-                $file=safe_path(ROOT_DIR.'/'.(isset($_GET['path']) ? $_GET['path'] : ''));
-                if(!$file||!is_file($file)) throw new Exception('Dosya bulunamadı');
-                if(!is_editable($file)) throw new Exception('Bu tür düzenlenemez');
-                echo json_encode(array('ok'=>true,'content'=>file_get_contents($file),'path'=>rel_path($file)));
-                break;
-
-            case 'save':
-                if(!ALLOW_EDIT) throw new Exception('İzin yok');
-                $data=json_decode(file_get_contents('php://input'),true);
-                $file=safe_path(ROOT_DIR.'/'.(isset($data['path']) ? $data['path'] : ''));
-                if(!$file) throw new Exception('Geçersiz yol');
-                if(!is_editable($file)) throw new Exception('Bu tür düzenlenemez');
-                file_put_contents($file,isset($data['content']) ? $data['content'] : '');
-                echo json_encode(array('ok'=>true,'msg'=>'Kaydedildi ✓'));
-                break;
-
-            case 'delete':
-                if(!ALLOW_DELETE) throw new Exception('İzin yok');
-                $data=json_decode(file_get_contents('php://input'),true);
-                $target=safe_path(ROOT_DIR.'/'.(isset($data['path']) ? $data['path'] : ''));
-                if(!$target) throw new Exception('Geçersiz yol');
-                if($target===realpath(ROOT_DIR)) throw new Exception('Kök silinemez');
-                if(is_dir($target)){
-                    $it=new RecursiveIteratorIterator(new RecursiveDirectoryIterator($target,FilesystemIterator::SKIP_DOTS),RecursiveIteratorIterator::CHILD_FIRST);
-                    foreach($it as $f) $f->isDir()?rmdir($f):unlink($f);
-                    rmdir($target);
-                } else unlink($target);
-                echo json_encode(array('ok'=>true,'msg'=>'Silindi ✓'));
-                break;
-
-            case 'rename':
-                if(!ALLOW_RENAME) throw new Exception('İzin yok');
-                $data=json_decode(file_get_contents('php://input'),true);
-                $old=safe_path(ROOT_DIR.'/'.(isset($data['path']) ? $data['path'] : ''));
-                $newname=basename(isset($data['newname']) ? $data['newname'] : '');
-                if(!$old||!$newname) throw new Exception('Geçersiz parametre');
-                $new=safe_path(dirname($old).'/'.$newname);
-                if(!$new) throw new Exception('Geçersiz isim');
-                if(file_exists($new)) throw new Exception('Bu isim zaten var');
-                rename($old,$new);
-                echo json_encode(array('ok'=>true,'msg'=>'Yeniden adlandırıldı ✓'));
-                break;
-
-            case 'newfolder':
-                if(!ALLOW_NEW_FOLDER) throw new Exception('İzin yok');
-                $data=json_decode(file_get_contents('php://input'),true);
-                $parent=safe_path(ROOT_DIR.'/'.(isset($data['path']) ? $data['path'] : ''));
-                $name=basename(isset($data['name']) ? $data['name'] : '');
-                if(!$parent||!$name) throw new Exception('Geçersiz parametre');
-                $new=safe_path($parent.'/'.$name);
-                if(!$new) throw new Exception('Geçersiz isim');
-                if(file_exists($new)) throw new Exception('Zaten var');
-                mkdir($new,0755);
-                echo json_encode(array('ok'=>true,'msg'=>'Klasör oluşturuldu ✓'));
-                break;
-
-            case 'newfile':
-                if(!ALLOW_NEW_FILE) throw new Exception('İzin yok');
-                $data=json_decode(file_get_contents('php://input'),true);
-                $parent=safe_path(ROOT_DIR.'/'.(isset($data['path']) ? $data['path'] : ''));
-                $name=basename(isset($data['name']) ? $data['name'] : '');
-                if(!$parent||!$name) throw new Exception('Geçersiz parametre');
-                $new=safe_path($parent.'/'.$name);
-                if(!$new) throw new Exception('Geçersiz isim');
-                if(file_exists($new)) throw new Exception('Zaten var');
-                file_put_contents($new,'');
-                echo json_encode(array('ok'=>true,'msg'=>'Dosya oluşturuldu ✓'));
-                break;
-
-            case 'upload':
-                if(!ALLOW_UPLOAD) throw new Exception('İzin yok');
-                $dir=safe_path(ROOT_DIR.'/'.(isset($_POST['path']) ? $_POST['path'] : ''));
-                if(!$dir||!is_dir($dir)) throw new Exception('Geçersiz dizin');
-                $results=[];
-                foreach($_FILES['files']['name'] as $i=>$fname){
-                    if($_FILES['files']['error'][$i]!==UPLOAD_ERR_OK){$results[]=array('name'=>$fname,'ok'=>false);continue;}
-                    $dest=safe_path($dir.'/'.basename($fname));
-                    if(!$dest){$results[]=array('name'=>$fname,'ok'=>false);continue;}
-                    move_uploaded_file($_FILES['files']['tmp_name'][$i],$dest);
-                    $results[]=array('name'=>$fname,'ok'=>true);
-                }
-                echo json_encode(array('ok'=>true,'results'=>$results));
-                break;
-
-            case 'shell':
-                if(!ALLOW_SHELL) throw new Exception('Shell devre dışı');
-                $data=json_decode(file_get_contents('php://input'),true);
-                $cmd=trim(isset($data['cmd']) ? $data['cmd'] : '');
-                $cwd=isset($data['cwd']) ? $data['cwd'] : ROOT_DIR;
-                $cwd_real_tmp=realpath($cwd); $cwd_real=$cwd_real_tmp?$cwd_real_tmp:ROOT_DIR;
-
-                if(empty($cmd)){echo json_encode(array('ok'=>true,'output'=>'','cwd'=>$cwd_real));break;}
-
-                // cd komutunu özel işle
-                if(preg_match('/^cd\s*(.*)?$/i',$cmd,$m)){
-                    $target=trim(isset($m[1]) ? $m[1] : '');
-                    if($target===''||$target==='~') $new_cwd=ROOT_DIR;
-                    else { $tmp1=realpath($cwd_real.'/'.$target); $tmp2=realpath($target); $new_cwd=$tmp1?$tmp1:$tmp2; }
-                    if(!$new_cwd||strpos($new_cwd,realpath(ROOT_DIR))!==0){
-                        echo json_encode(['ok'=>true,'output'=>"bash: cd: İzin reddedildi\n",'cwd'=>$cwd_real,'code'=>1]);
-                        break;
-                    }
-                    echo json_encode(array('ok'=>true,'output'=>'','cwd'=>$new_cwd,'code'=>0));
-                    break;
-                }
-
-                $result=shell_exec_safe($cmd,$cwd_real);
-                echo json_encode(array('ok'=>true,'output'=>$result['output'],'code'=>$result['code'],'cwd'=>$cwd_real));
-                break;
-
-            default:
-                throw new Exception('Bilinmeyen eylem');
-        }
-    } catch(Exception $e){
-        http_response_code(400);
-        echo json_encode(array('ok'=>false,'msg'=>$e->getMessage()));
-    }
+    proc_close($proc);
+    echo $out . $err . "\nCWD:" . $cwd;
     exit;
 }
-
-// ============================================================
-// HTML
-// ============================================================
-$shell_ok = ALLOW_SHELL && function_exists('proc_open');
-$hostname = gethostname() ? gethostname() : 'server';
-$whoami   = trim(shell_exec('whoami')) ? trim(shell_exec('whoami')) : 'www-data';
-$root_real= realpath(ROOT_DIR);
 ?><!DOCTYPE html>
-<html lang="tr">
+<html>
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title><?=htmlspecialchars(APP_TITLE)?></title>
+<title>Dosya Yoneticisi</title>
 <style>
-*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-:root{
-  --bg:#0b0d12;--surface:#131620;--surface2:#1a1e2e;--border:#232840;
-  --accent:#4f8ef7;--danger:#e74c5e;--success:#3dcf8e;--warn:#f7a444;
-  --text:#dde3f5;--muted:#6273a0;
-  --mono:'JetBrains Mono','Fira Code',monospace;
-  --sans:'Inter',system-ui,sans-serif;
-  --radius:7px;--shadow:0 8px 32px rgba(0,0,0,.55);
-}
-body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:13px;height:100dvh;display:flex;flex-direction:column;overflow:hidden}
-
-/* TAB BAR */
-.tab-bar{display:flex;background:var(--surface);border-bottom:1px solid var(--border);flex-shrink:0;align-items:stretch}
-.app-logo{padding:0 18px;display:flex;align-items:center;font-weight:700;font-size:13px;color:var(--accent);border-right:1px solid var(--border);white-space:nowrap;letter-spacing:-.3px}
-.app-logo span{color:var(--muted);font-weight:400;font-size:11px;margin-left:4px}
-.tab{padding:10px 20px;cursor:pointer;font-size:12px;font-weight:500;color:var(--muted);border-bottom:2px solid transparent;transition:all .15s;display:flex;align-items:center;gap:6px;user-select:none}
-.tab:hover{color:var(--text)}
-.tab.active{color:var(--accent);border-bottom-color:var(--accent)}
-.tab-spacer{flex:1}
-.tab-info{padding:0 14px;display:flex;align-items:center;gap:8px;font-size:11px;color:var(--muted)}
-
-/* PANES */
-.pane{display:none;flex:1;overflow:hidden;flex-direction:column}
-.pane.active{display:flex}
-
-/* TOOLBAR */
-.toolbar{background:var(--surface);border-bottom:1px solid var(--border);padding:7px 14px;display:flex;gap:6px;align-items:center;flex-shrink:0;flex-wrap:wrap}
-.btn{display:inline-flex;align-items:center;gap:5px;padding:5px 12px;border-radius:var(--radius);border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:12px;font-family:inherit;cursor:pointer;transition:all .15s;white-space:nowrap}
-.btn:hover{border-color:var(--accent);color:var(--accent)}
-.btn.danger:hover{border-color:var(--danger);color:var(--danger)}
-.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
-.btn.primary:hover{background:#3a7ae0;border-color:#3a7ae0;color:#fff}
-.t-sep{flex:1}
-
-/* BREADCRUMB */
-#breadcrumb{display:flex;align-items:center;gap:3px;font-size:11px;color:var(--muted);flex-wrap:wrap;padding:5px 14px;background:var(--surface);border-bottom:1px solid var(--border);flex-shrink:0}
-#breadcrumb a{color:var(--accent);text-decoration:none;cursor:pointer}
-#breadcrumb a:hover{text-decoration:underline}
-.bsep{color:var(--border);margin:0 2px}
-#search-box{background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:4px 10px;color:var(--text);font-size:12px;width:180px;outline:none;transition:border-color .15s}
-#search-box:focus{border-color:var(--accent)}
-
-/* FILE AREA */
-.file-area{flex:1;display:flex;overflow:hidden}
-#file-panel{flex:1;overflow-y:auto;padding:12px 14px}
-#file-panel::-webkit-scrollbar{width:5px}
-#file-panel::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
-
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0e1117;color:#cdd6f4;font-family:monospace;font-size:13px;height:100vh;display:flex;flex-direction:column}
+#tabs{display:flex;background:#1e2130;border-bottom:1px solid #2a2e42}
+.tab{padding:10px 22px;cursor:pointer;color:#6c7086;border-bottom:2px solid transparent}
+.tab.on{color:#89b4fa;border-bottom-color:#89b4fa}
+#pane-files,#pane-shell{display:none;flex:1;flex-direction:column;overflow:hidden}
+#pane-files.on,#pane-shell.on{display:flex}
+/* toolbar */
+#toolbar{background:#1e2130;padding:6px 10px;display:flex;gap:6px;flex-wrap:wrap;border-bottom:1px solid #2a2e42;align-items:center}
+#bread{background:#181b27;padding:5px 10px;font-size:12px;color:#6c7086;border-bottom:1px solid #2a2e42;flex-shrink:0}
+#bread a{color:#89b4fa;cursor:pointer;text-decoration:none}
+button,input[type=text]{font-family:monospace;font-size:12px}
+button{background:#2a2e42;border:1px solid #3a3f55;color:#cdd6f4;padding:4px 11px;cursor:pointer;border-radius:4px}
+button:hover{background:#3a3f55}
+button.red:hover{background:#3d1a1f;border-color:#e74c5e;color:#e74c5e}
+button.green{background:#1a2e2a;border-color:#3dcf8e;color:#3dcf8e}
+input[type=text]{background:#1e2130;border:1px solid #2a2e42;color:#cdd6f4;padding:4px 8px;border-radius:4px;outline:none}
+input[type=text]:focus{border-color:#89b4fa}
+#srch{width:160px}
+/* file table */
+#ftable-wrap{flex:1;overflow:auto}
 table{width:100%;border-collapse:collapse}
-thead th{text-align:left;padding:6px 10px;font-size:10px;font-weight:600;letter-spacing:.07em;text-transform:uppercase;color:var(--muted);border-bottom:1px solid var(--border);position:sticky;top:-12px;background:var(--bg);z-index:1}
-tbody tr{transition:background .1s}
-tbody tr:hover{background:var(--surface2)}
-tbody td{padding:8px 10px;border-bottom:1px solid rgba(35,40,64,.4);vertical-align:middle}
-.th-check,.td-check{width:30px}
-td.name{cursor:pointer;font-weight:500}
-td.name:hover .fname{color:var(--accent)}
-.fname{transition:color .1s}
-td.size,td.mtime{color:var(--muted);font-size:11px;white-space:nowrap}
-td.actions{width:110px;text-align:right}
-.act-btn{background:none;border:none;color:var(--muted);cursor:pointer;padding:3px 5px;border-radius:4px;font-size:13px;transition:all .15s}
-.act-btn:hover.edit{color:var(--accent);background:rgba(79,142,247,.12)}
-.act-btn:hover.rename{color:var(--warn);background:rgba(247,164,68,.12)}
-.act-btn:hover.del{color:var(--danger);background:rgba(231,76,94,.12)}
-
-/* EDITOR */
-#editor-panel{width:50%;border-left:1px solid var(--border);display:flex;flex-direction:column;background:var(--surface);transition:width .2s;overflow:hidden}
-#editor-panel.hidden{width:0;border:none}
-.editor-header{padding:8px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;flex-shrink:0}
-.editor-title{flex:1;font-size:11px;font-family:var(--mono);color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-#editor-textarea{flex:1;background:#090b10;border:none;color:#cdd6f4;font-family:var(--mono);font-size:12.5px;line-height:1.75;padding:14px;resize:none;outline:none;tab-size:4}
-#editor-textarea::-webkit-scrollbar{width:5px}
-#editor-textarea::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
-
-/* SEL BAR */
-#sel-bar{display:none;background:rgba(79,142,247,.1);border:1px solid rgba(79,142,247,.25);border-radius:var(--radius);padding:4px 12px;align-items:center;gap:8px;font-size:11px;color:var(--accent)}
-#sel-bar.visible{display:flex}
-
-.loading{display:flex;align-items:center;justify-content:center;padding:48px;color:var(--muted);gap:12px}
-.spinner{width:18px;height:18px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .6s linear infinite}
-@keyframes spin{to{transform:rotate(360deg)}}
-.empty{text-align:center;padding:48px;color:var(--muted);font-size:13px}
-
-/* ══ SHELL ══ */
-#pane-shell{background:#08090e;flex-direction:column;font-family:var(--mono);font-size:13px}
-.shell-topbar{background:var(--surface);border-bottom:1px solid var(--border);padding:6px 14px;display:flex;align-items:center;gap:10px;flex-shrink:0;font-size:11px;color:var(--muted)}
-.shell-topbar .cwd-d{color:var(--accent);font-family:var(--mono);font-size:11px}
-.shell-warn{background:rgba(247,164,68,.08);border-bottom:1px solid rgba(247,164,68,.2);padding:5px 14px;font-size:11px;color:var(--warn);flex-shrink:0;display:flex;align-items:center;gap:6px}
-#terminal-output{flex:1;overflow-y:auto;padding:10px 14px;line-height:1.65;white-space:pre-wrap;word-break:break-all;color:#c8d3f5}
-#terminal-output::-webkit-scrollbar{width:5px}
-#terminal-output::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
-.t-line{display:flex;flex-wrap:wrap;gap:0}
-.t-prompt{color:var(--success);user-select:none;flex-shrink:0}
-.t-prompt .uh{color:#89dceb}.t-prompt .at{color:var(--muted)}.t-prompt .ho{color:#cba6f7}
-.t-prompt .co{color:var(--muted)}.t-prompt .pa{color:var(--accent)}.t-prompt .do{color:var(--success)}
-.t-cmd{color:#cdd6f4}
-.t-out{color:#a9b1d6}
-.t-err{color:#f7768e}
-.t-xok{color:var(--success);font-size:10px}
-.t-xer{color:var(--danger);font-size:10px}
-.quick-cmds{display:flex;gap:5px;padding:5px 14px 6px;background:rgba(13,15,24,.7);border-bottom:1px solid var(--border);flex-wrap:wrap;flex-shrink:0}
-.qcmd{background:var(--surface2);border:1px solid var(--border);border-radius:4px;padding:2px 9px;font-size:11px;font-family:var(--mono);color:var(--muted);cursor:pointer;transition:all .15s}
-.qcmd:hover{color:var(--accent);border-color:var(--accent)}
-.shell-input-row{display:flex;align-items:center;padding:8px 14px;border-top:1px solid var(--border);background:var(--surface);gap:6px;flex-shrink:0}
-.prompt-label{color:var(--success);font-family:var(--mono);font-size:13px;white-space:nowrap;flex-shrink:0}
-.prompt-label .uh{color:#89dceb}.prompt-label .at{color:var(--muted)}.prompt-label .ho{color:#cba6f7}
-.prompt-label .co{color:var(--muted)}.prompt-label .pa{color:var(--accent)}.prompt-label .do{color:var(--success)}
-#shell-input{flex:1;background:transparent;border:none;color:#cdd6f4;font-family:var(--mono);font-size:13px;outline:none;caret-color:var(--accent)}
-.shell-actions{display:flex;gap:4px}
-.shell-btn{background:var(--surface2);border:1px solid var(--border);border-radius:5px;padding:3px 10px;color:var(--muted);font-size:11px;cursor:pointer;font-family:inherit;transition:all .15s}
-.shell-btn:hover{color:var(--text);border-color:var(--accent)}
-.shell-btn.run{color:var(--success);border-color:rgba(61,207,142,.3)}
-.shell-btn.run:hover{background:rgba(61,207,142,.1)}
-
-/* MODALS */
-.overlay{position:fixed;inset:0;background:rgba(0,0,0,.65);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;z-index:100;opacity:0;pointer-events:none;transition:opacity .18s}
-.overlay.show{opacity:1;pointer-events:all}
-.modal{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:22px;width:360px;box-shadow:var(--shadow);transform:translateY(14px);transition:transform .18s}
-.overlay.show .modal{transform:translateY(0)}
-.modal h3{font-size:14px;margin-bottom:14px}
-.modal label{font-size:11px;color:var(--muted);display:block;margin-bottom:5px}
-.modal input[type=text]{width:100%;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:7px 11px;color:var(--text);font-size:12.5px;outline:none;transition:border-color .15s}
-.modal input[type=text]:focus{border-color:var(--accent)}
-.modal-actions{display:flex;gap:8px;margin-top:18px;justify-content:flex-end}
-#drop-zone{border:2px dashed var(--border);border-radius:var(--radius);padding:20px;text-align:center;color:var(--muted);cursor:pointer;transition:all .2s;margin-bottom:10px}
-#drop-zone.drag-over{border-color:var(--accent);color:var(--accent);background:rgba(79,142,247,.05)}
-#file-input{display:none}
-#upload-list{max-height:160px;overflow-y:auto;font-size:11px}
-.upload-item{display:flex;align-items:center;gap:6px;padding:3px 0}
-.upload-item .status{margin-left:auto}
-
-/* TOAST */
-#toast{position:fixed;bottom:20px;right:20px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:9px 16px;font-size:12px;box-shadow:var(--shadow);z-index:200;transform:translateY(70px);opacity:0;transition:all .25s;max-width:320px}
-#toast.show{transform:translateY(0);opacity:1}
-#toast.ok{border-color:var(--success);color:var(--success)}
-#toast.err{border-color:var(--danger);color:var(--danger)}
-
-input[type=checkbox]{accent-color:var(--accent);cursor:pointer}
-@media(max-width:700px){#editor-panel{width:100%;position:fixed;inset:0;z-index:50;border:none}#editor-panel.hidden{display:none}td.mtime,th.mtime{display:none}}
+th{text-align:left;padding:5px 8px;font-size:11px;color:#6c7086;border-bottom:1px solid #2a2e42;position:sticky;top:0;background:#0e1117}
+td{padding:6px 8px;border-bottom:1px solid #181b27;vertical-align:middle}
+tr:hover td{background:#181b27}
+td.nm{cursor:pointer;color:#89b4fa}
+td.nm:hover{text-decoration:underline}
+td.sz,td.dt{color:#6c7086;font-size:11px;white-space:nowrap}
+td.ac{text-align:right;white-space:nowrap}
+td.ac button{padding:2px 7px;font-size:11px;margin-left:2px}
+/* editor overlay */
+#editor{display:none;position:fixed;inset:0;background:#0e1117;z-index:50;flex-direction:column}
+#editor.on{display:flex}
+#editor-head{background:#1e2130;border-bottom:1px solid #2a2e42;padding:6px 10px;display:flex;gap:6px;align-items:center}
+#editor-title{flex:1;color:#6c7086;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#editor-area{flex:1;background:#090b10;border:none;color:#cdd6f4;font-family:monospace;font-size:13px;padding:12px;resize:none;outline:none;line-height:1.7}
+/* shell */
+#term-out{flex:1;overflow-y:auto;padding:10px;font-family:monospace;font-size:13px;line-height:1.7;white-space:pre-wrap;word-break:break-all;color:#a6adc8}
+#term-out::-webkit-scrollbar{width:4px}
+#term-out::-webkit-scrollbar-thumb{background:#2a2e42}
+.t-ps{color:#a6e3a1}.t-er{color:#f38ba8}.t-pt{color:#89b4fa}
+#term-in-row{display:flex;align-items:center;gap:6px;padding:6px 10px;background:#1e2130;border-top:1px solid #2a2e42;flex-shrink:0}
+#term-prompt{color:#a6e3a1;white-space:nowrap;font-size:13px}
+#term-in{flex:1;background:transparent;border:none;color:#cdd6f4;font-family:monospace;font-size:13px;outline:none}
+/* quick cmds */
+#qcmds{background:#181b27;border-bottom:1px solid #2a2e42;padding:4px 10px;display:flex;gap:5px;flex-wrap:wrap;flex-shrink:0}
+.qc{background:#2a2e42;border:1px solid #3a3f55;border-radius:3px;padding:1px 8px;font-size:11px;cursor:pointer;color:#a6adc8;font-family:monospace}
+.qc:hover{color:#89b4fa;border-color:#89b4fa}
+/* modal */
+#modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:100;align-items:center;justify-content:center}
+#modal.on{display:flex}
+#modal-box{background:#1e2130;border:1px solid #2a2e42;border-radius:8px;padding:20px;min-width:300px}
+#modal-box h3{margin-bottom:12px;font-size:14px}
+#modal-inp{width:100%;margin-bottom:14px}
+#modal-btns{display:flex;gap:8px;justify-content:flex-end}
+/* upload */
+#upl-form{display:none}
+.msg{padding:30px;text-align:center;color:#6c7086}
 </style>
 </head>
 <body>
 
-<!-- TAB BAR -->
-<div class="tab-bar">
-  <div class="app-logo">⚙ <?=htmlspecialchars(APP_TITLE)?> <span>v2.0</span></div>
-  <div class="tab active" id="tab-files" onclick="switchTab('files')">📁 Dosyalar</div>
-  <?php if($shell_ok):?>
-  <div class="tab" id="tab-shell" onclick="switchTab('shell')">💻 Terminal</div>
-  <?php endif;?>
-  <div class="tab-spacer"></div>
-  <div class="tab-info">
-    <span>🖥 <?=htmlspecialchars($hostname)?></span>
-    <span>•</span>
-    <span>👤 <?=htmlspecialchars($whoami)?></span>
-    <span>•</span>
-    <span>PHP <?=PHP_MAJOR_VERSION.'.'.PHP_MINOR_VERSION?></span>
-  </div>
+<div id="tabs">
+  <div class="tab on" onclick="showTab('files')">📁 Dosyalar</div>
+  <div class="tab" onclick="showTab('shell')">💻 Terminal</div>
+  <div style="flex:1"></div>
+  <div style="padding:10px;color:#6c7086;font-size:11px">PHP <?php echo PHP_VERSION; ?> &nbsp;|&nbsp; <?php echo php_uname('n'); ?></div>
 </div>
 
-<!-- FILE PANE -->
-<div class="pane active" id="pane-files">
-  <div class="toolbar">
-    <?php if(ALLOW_NEW_FOLDER):?><button class="btn" onclick="showModal('modal-folder')">📁 Yeni Klasör</button><?php endif;?>
-    <?php if(ALLOW_NEW_FILE):?><button class="btn" onclick="showModal('modal-newfile')">📄 Yeni Dosya</button><?php endif;?>
-    <?php if(ALLOW_UPLOAD):?><button class="btn primary" onclick="showModal('modal-upload')">⬆ Yükle</button><?php endif;?>
-    <div id="sel-bar">
-      <span id="sel-count">0 seçili</span>
-      <?php if(ALLOW_DELETE):?><button class="btn danger" onclick="bulkDelete()">🗑 Sil</button><?php endif;?>
-      <button class="btn" onclick="clearSelection()">✕</button>
-    </div>
-    <div class="t-sep"></div>
-    <input id="search-box" type="text" placeholder="🔍 Filtrele..." oninput="filterTable(this.value)">
-    <button class="btn" onclick="refresh()">↻</button>
+<!-- FILES PANE -->
+<div id="pane-files" class="on">
+  <div id="toolbar">
+    <button onclick="mkdirUI()">+ Klasor</button>
+    <button onclick="mkfileUI()">+ Dosya</button>
+    <button onclick="uploadUI()" class="green">⬆ Yukle</button>
+    <button onclick="loadDir(curPath)">↺ Yenile</button>
+    <input type="text" id="srch" placeholder="Filtrele..." oninput="filter(this.value)">
+    <form id="upl-form" enctype="multipart/form-data">
+      <input type="file" id="upl-input" name="files[]" multiple onchange="doUpload()">
+    </form>
   </div>
-  <div id="breadcrumb"><a onclick="navigate('')">🏠 Kök</a></div>
-  <div class="file-area">
-    <div id="file-panel">
-      <div class="loading" id="loading"><div class="spinner"></div> Yükleniyor…</div>
-      <table id="file-table" style="display:none">
-        <thead><tr>
-          <th class="th-check"><input type="checkbox" id="chk-all" onchange="toggleAll(this)"></th>
-          <th>Ad</th><th>Boyut</th><th class="mtime">Değiştirilme</th><th>İşlem</th>
-        </tr></thead>
-        <tbody id="file-body"></tbody>
-      </table>
-      <div class="empty" id="empty-msg" style="display:none">📂 Bu dizin boş.</div>
-    </div>
-    <div id="editor-panel" class="hidden">
-      <div class="editor-header">
-        <span class="editor-title" id="editor-title">-</span>
-        <button class="btn primary" onclick="saveFile()">💾 Kaydet</button>
-        <button class="btn" onclick="closeEditor()">✕</button>
-      </div>
-      <textarea id="editor-textarea" spellcheck="false"></textarea>
-    </div>
+  <div id="bread"></div>
+  <div id="ftable-wrap">
+    <div class="msg">Yukleniyor...</div>
   </div>
 </div>
 
 <!-- SHELL PANE -->
-<?php if($shell_ok):?>
-<div class="pane" id="pane-shell">
-  <div class="shell-topbar">
-    <span>💻 Terminal</span>
-    <span>•</span>
-    <span>Dizin: <span class="cwd-d" id="cwd-display"><?=htmlspecialchars($root_real)?></span></span>
-    <div style="flex:1"></div>
-    <button class="shell-btn" onclick="clearTerminal()">🗑 Temizle</button>
-    <button class="shell-btn" onclick="copyOutput()">📋 Kopyala</button>
+<div id="pane-shell">
+  <div id="qcmds">
+    <span style="color:#6c7086;font-size:11px;align-self:center">Hizli:</span>
+    <span class="qc" onclick="qcmd('ls -la')">ls -la</span>
+    <span class="qc" onclick="qcmd('pwd')">pwd</span>
+    <span class="qc" onclick="qcmd('df -h')">df -h</span>
+    <span class="qc" onclick="qcmd('free -h')">free -h</span>
+    <span class="qc" onclick="qcmd('ps aux')">ps aux</span>
+    <span class="qc" onclick="qcmd('php -v')">php -v</span>
+    <span class="qc" onclick="qcmd('uname -a')">uname</span>
+    <span class="qc" onclick="qcmd('whoami')">whoami</span>
+    <span class="qc" onclick="qcmd('env')">env</span>
+    <span class="qc" onclick="qcmd('netstat -tlnp 2>/dev/null || ss -tlnp')">ports</span>
+    <span class="qc" onclick="clearTerm()">🗑 Temizle</span>
   </div>
-  <div class="shell-warn">⚠ Bu terminal sunucuda doğrudan komut çalıştırır — dikkatli kullanın.</div>
-  <div class="quick-cmds">
-    <span style="color:var(--muted);font-size:10px;align-self:center">Hızlı:</span>
-    <span class="qcmd" onclick="runQuick('ls -la')">ls -la</span>
-    <span class="qcmd" onclick="runQuick('pwd')">pwd</span>
-    <span class="qcmd" onclick="runQuick('ps aux')">ps aux</span>
-    <span class="qcmd" onclick="runQuick('df -h')">df -h</span>
-    <span class="qcmd" onclick="runQuick('free -h')">free -h</span>
-    <span class="qcmd" onclick="runQuick('top -bn1 | head -20')">top</span>
-    <span class="qcmd" onclick="runQuick('php -v')">php -v</span>
-    <span class="qcmd" onclick="runQuick('uname -a')">uname</span>
-    <span class="qcmd" onclick="runQuick('netstat -tlnp 2>/dev/null || ss -tlnp')">ports</span>
-    <span class="qcmd" onclick="runQuick('cat /etc/os-release')">os</span>
-    <span class="qcmd" onclick="runQuick('env')">env</span>
-    <span class="qcmd" onclick="runQuick('whoami && id')">whoami</span>
-    <span class="qcmd" onclick="runQuick('find . -name \'*.php\' | head -20')">find php</span>
-    <span class="qcmd" onclick="runQuick('tail -50 /var/log/apache2/error.log 2>/dev/null || tail -50 /var/log/nginx/error.log 2>/dev/null')">error.log</span>
-  </div>
-  <div id="terminal-output"></div>
-  <div class="shell-input-row">
-    <div class="prompt-label" id="prompt-label">
-      <span class="uh"><?=htmlspecialchars($whoami)?></span><span class="at">@</span><span class="ho"><?=htmlspecialchars($hostname)?></span><span class="co">:</span><span class="pa" id="prompt-path">~</span><span class="do"> $</span>
-    </div>
-    <input type="text" id="shell-input" placeholder="komut yazın..." autocomplete="off" autocorrect="off" spellcheck="false">
-    <div class="shell-actions">
-      <button class="shell-btn run" onclick="runShell()">▶ Çalıştır</button>
-    </div>
-  </div>
-</div>
-<?php endif;?>
-
-<!-- TOAST -->
-<div id="toast"></div>
-
-<!-- MODALS -->
-<div class="overlay" id="modal-folder" onclick="closeModal(this)">
-  <div class="modal" onclick="event.stopPropagation()">
-    <h3>📁 Yeni Klasör</h3>
-    <label>Klasör adı</label>
-    <input type="text" id="inp-folder" placeholder="klasor-adi" onkeydown="if(event.key==='Enter')doNewFolder()">
-    <div class="modal-actions">
-      <button class="btn" onclick="closeModal('modal-folder')">İptal</button>
-      <button class="btn primary" onclick="doNewFolder()">Oluştur</button>
-    </div>
+  <div id="term-out"></div>
+  <div id="term-in-row">
+    <span id="term-prompt">$ </span>
+    <input type="text" id="term-in" placeholder="komut..." autocomplete="off" spellcheck="false">
+    <button onclick="runCmd()">▶</button>
   </div>
 </div>
 
-<div class="overlay" id="modal-newfile" onclick="closeModal(this)">
-  <div class="modal" onclick="event.stopPropagation()">
-    <h3>📄 Yeni Dosya</h3>
-    <label>Dosya adı</label>
-    <input type="text" id="inp-newfile" placeholder="dosya.txt" onkeydown="if(event.key==='Enter')doNewFile()">
-    <div class="modal-actions">
-      <button class="btn" onclick="closeModal('modal-newfile')">İptal</button>
-      <button class="btn primary" onclick="doNewFile()">Oluştur</button>
-    </div>
+<!-- EDITOR -->
+<div id="editor">
+  <div id="editor-head">
+    <span id="editor-title"></span>
+    <button onclick="saveFile()" class="green">💾 Kaydet</button>
+    <button onclick="closeEditor()">✕ Kapat</button>
   </div>
+  <textarea id="editor-area" spellcheck="false"></textarea>
 </div>
 
-<div class="overlay" id="modal-rename" onclick="closeModal(this)">
-  <div class="modal" onclick="event.stopPropagation()">
-    <h3>✏️ Yeniden Adlandır</h3>
-    <label>Yeni ad</label>
-    <input type="text" id="inp-rename" placeholder="yeni-ad" onkeydown="if(event.key==='Enter')doRename()">
-    <div class="modal-actions">
-      <button class="btn" onclick="closeModal('modal-rename')">İptal</button>
-      <button class="btn primary" onclick="doRename()">Kaydet</button>
-    </div>
-  </div>
-</div>
-
-<div class="overlay" id="modal-upload" onclick="closeModal(this)">
-  <div class="modal" onclick="event.stopPropagation()" style="width:420px">
-    <h3>⬆ Dosya Yükle</h3>
-    <div id="drop-zone" onclick="document.getElementById('file-input').click()"
-         ondragover="event.preventDefault();this.classList.add('drag-over')"
-         ondragleave="this.classList.remove('drag-over')"
-         ondrop="handleDrop(event)">
-      <div style="font-size:28px;margin-bottom:6px">📂</div>
-      Tıklayın veya dosyaları sürükleyin
-    </div>
-    <input type="file" id="file-input" multiple onchange="handleFiles(this.files)">
-    <div id="upload-list"></div>
-    <div class="modal-actions">
-      <button class="btn" onclick="closeModal('modal-upload')">Kapat</button>
-      <button class="btn primary" id="btn-upload" onclick="doUpload()" disabled>Yükle</button>
-    </div>
-  </div>
-</div>
-
-<div class="overlay" id="modal-delete" onclick="closeModal(this)">
-  <div class="modal" onclick="event.stopPropagation()">
-    <h3>🗑 Silme Onayı</h3>
-    <p id="del-msg" style="color:var(--muted);font-size:12px;line-height:1.55"></p>
-    <div class="modal-actions">
-      <button class="btn" onclick="closeModal('modal-delete')">İptal</button>
-      <button class="btn danger" id="btn-del-confirm">Evet, Sil</button>
+<!-- MODAL -->
+<div id="modal" onclick="closeModal()">
+  <div id="modal-box" onclick="event.stopPropagation()">
+    <h3 id="modal-title"></h3>
+    <input type="text" id="modal-inp" class="input" onkeydown="if(event.keyCode==13)modalOK()">
+    <div id="modal-btns">
+      <button onclick="closeModal()">Iptal</button>
+      <button onclick="modalOK()" class="green" id="modal-ok-btn">Tamam</button>
     </div>
   </div>
 </div>
 
 <script>
-// ── STATE ──────────────────────────────────────────────────
-let currentPath='', editorPath=null, renameTarget=null, deleteTarget=null;
-let uploadFiles=[], selectedRows=new Set();
-let shellCwd=<?=json_encode($root_real)?>, cmdHistory=[], histIdx=-1;
+var curPath  = '';
+var editPath = '';
+var shellCwd = <?php echo "'" . addslashes($ROOT) . "'"; ?>;
+var cmdHist  = [];
+var histIdx  = -1;
+var modalCb  = null;
 
-// ── TABS ───────────────────────────────────────────────────
-function switchTab(n){
-  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
-  document.querySelectorAll('.pane').forEach(p=>p.classList.remove('active'));
-  document.getElementById('tab-'+n)?.classList.add('active');
-  document.getElementById('pane-'+n)?.classList.add('active');
-  if(n==='shell') setTimeout(()=>document.getElementById('shell-input')?.focus(),80);
+// ---- TABS ----
+function showTab(t) {
+  document.getElementById('pane-files').className = t == 'files' ? 'on' : '';
+  document.getElementById('pane-shell').className = t == 'shell' ? 'on' : '';
+  document.querySelectorAll('.tab')[0].className  = t == 'files' ? 'tab on' : 'tab';
+  document.querySelectorAll('.tab')[1].className  = t == 'shell'  ? 'tab on' : 'tab';
+  if (t == 'shell') document.getElementById('term-in').focus();
 }
 
-// ── FILE MANAGER ───────────────────────────────────────────
-async function navigate(path){
-  currentPath=path; selectedRows.clear(); updateSelBar();
-  document.getElementById('loading').style.display='flex';
-  document.getElementById('file-table').style.display='none';
-  document.getElementById('empty-msg').style.display='none';
-  const r=await fetch(`?action=list&path=${encodeURIComponent(path)}`,{headers:{'X-Requested-With':'XMLHttpRequest'}});
-  const d=await r.json();
-  if(!d.ok){toast(d.msg,'err');return;}
-  renderBreadcrumb(d.path); renderFiles(d.items);
-  document.getElementById('loading').style.display='none';
-  document.getElementById(d.items.length?'file-table':'empty-msg').style.display=d.items.length?'table':'block';
-  document.getElementById('chk-all').checked=false;
-  filterTable(document.getElementById('search-box').value);
-}
-function refresh(){navigate(currentPath)}
-
-function renderBreadcrumb(path){
-  const bc=document.getElementById('breadcrumb');
-  let h=`<a onclick="navigate('')">🏠 Kök</a>`;
-  if(path){
-    const parts=path.split(/[\\/]/); let acc='';
-    parts.forEach((p,i)=>{
-      acc+=(acc?'/':'')+p; const cur=acc;
-      h+=`<span class="bsep"> / </span>`;
-      h+=i<parts.length-1?`<a onclick="navigate('${cur}')">${p}</a>`:`<span>${p}</span>`;
-    });
+// ---- FILE MANAGER ----
+function ajax(url, data, cb) {
+  var xhr = new XMLHttpRequest();
+  if (data) {
+    xhr.open('POST', url, true);
+    var fd = new FormData();
+    for (var k in data) fd.append(k, data[k]);
+    xhr.onload = function() { cb(xhr.responseText); };
+    xhr.send(fd);
+  } else {
+    xhr.open('GET', url, true);
+    xhr.onload = function() { cb(xhr.responseText); };
+    xhr.send();
   }
-  bc.innerHTML=h;
 }
 
-function renderFiles(items){
-  document.getElementById('file-body').innerHTML=items.map(item=>{
-    const pe=item.path.replace(/'/g,"\\'");
-    const name=item.name.replace(/</g,'&lt;').replace(/>/g,'&gt;');
-    const acts=[];
-    if(item.editable) acts.push(`<button class="act-btn edit" title="Düzenle" onclick="openEditor('${pe}')">✏️</button>`);
-    acts.push(`<button class="act-btn rename" title="Yeniden Adlandır" onclick="startRename('${pe}','${name}')">🏷</button>`);
-    acts.push(`<button class="act-btn del" title="Sil" onclick="confirmDelete('${pe}','${name}',${item.is_dir})">🗑</button>`);
-    return `<tr data-name="${name.toLowerCase()}">
-      <td class="td-check"><input type="checkbox" onchange="toggleRow(this,'${pe}')" data-path="${pe}"></td>
-      <td class="name" onclick="${item.is_dir?`navigate('${pe}')`:item.editable?`openEditor('${pe}')`:''}">`+
-      `<span class="file-icon">${item.icon}</span><span class="fname">${name}</span></td>
-      <td class="size">${item.size}</td>
-      <td class="mtime">${item.mtime}</td>
-      <td class="actions">${acts.join('')}</td></tr>`;
-  }).join('');
-}
-
-function filterTable(q){
-  q=q.toLowerCase().trim();
-  document.querySelectorAll('#file-body tr').forEach(tr=>{
-    tr.style.display=(!q||(tr.dataset.name||'').includes(q))?'':'none';
+function loadDir(p) {
+  curPath = p;
+  renderBread(p);
+  document.getElementById('ftable-wrap').innerHTML = '<div class="msg">Yukleniyor...</div>';
+  ajax('?act=list&p=' + encodeURIComponent(p), null, function(res) {
+    renderFiles(res.trim());
+    document.getElementById('srch').value = '';
   });
 }
 
-async function openEditor(path){
-  const r=await fetch(`?action=read&path=${encodeURIComponent(path)}`,{headers:{'X-Requested-With':'XMLHttpRequest'}});
-  const d=await r.json();
-  if(!d.ok){toast(d.msg,'err');return;}
-  editorPath=path;
-  document.getElementById('editor-title').textContent=path;
-  document.getElementById('editor-textarea').value=d.content;
-  document.getElementById('editor-panel').classList.remove('hidden');
-}
-function closeEditor(){document.getElementById('editor-panel').classList.add('hidden');editorPath=null}
-async function saveFile(){
-  if(!editorPath) return;
-  const r=await fetch('?action=save',{method:'POST',headers:{'Content-Type':'application/json','X-Requested-With':'XMLHttpRequest'},
-    body:JSON.stringify({path:editorPath,content:document.getElementById('editor-textarea').value})});
-  const d=await r.json(); toast(d.msg,d.ok?'ok':'err');
-}
-
-function confirmDelete(path,name,isDir){
-  deleteTarget=[path];
-  document.getElementById('del-msg').textContent=`"${name}" ${isDir?'klasörü ve içeriği':'dosyası'} kalıcı silinecek. Emin misiniz?`;
-  document.getElementById('btn-del-confirm').onclick=doDelete;
-  showModal('modal-delete');
-}
-function bulkDelete(){
-  if(!selectedRows.size) return;
-  deleteTarget=[...selectedRows];
-  document.getElementById('del-msg').textContent=`${selectedRows.size} öğe kalıcı silinecek.`;
-  document.getElementById('btn-del-confirm').onclick=doDelete;
-  showModal('modal-delete');
-}
-async function doDelete(){
-  closeModal('modal-delete'); let ok=0,fail=0;
-  for(const p of deleteTarget){
-    const r=await fetch('?action=delete',{method:'POST',headers:{'Content-Type':'application/json','X-Requested-With':'XMLHttpRequest'},body:JSON.stringify({path:p})});
-    (await r.json()).ok?ok++:fail++;
+function renderBread(p) {
+  var html = '<a onclick="loadDir(\'\')" >Kok</a>';
+  if (p) {
+    var parts = p.split('/');
+    var acc   = '';
+    for (var i = 0; i < parts.length; i++) {
+      acc += (acc ? '/' : '') + parts[i];
+      var c = acc;
+      if (i < parts.length - 1) html += ' / <a onclick="loadDir(\'' + c + '\')">' + parts[i] + '</a>';
+      else html += ' / ' + parts[i];
+    }
   }
-  toast(fail===0?`${ok} öğe silindi`:`${ok} silindi, ${fail} hata`,fail===0?'ok':'err'); refresh();
+  document.getElementById('bread').innerHTML = html;
 }
 
-function startRename(path,current){
-  renameTarget=path; const inp=document.getElementById('inp-rename'); inp.value=current;
-  showModal('modal-rename'); setTimeout(()=>inp.select(),180);
-}
-async function doRename(){
-  const n=document.getElementById('inp-rename').value.trim(); if(!n) return;
-  closeModal('modal-rename');
-  const r=await fetch('?action=rename',{method:'POST',headers:{'Content-Type':'application/json','X-Requested-With':'XMLHttpRequest'},body:JSON.stringify({path:renameTarget,newname:n})});
-  const d=await r.json(); toast(d.msg,d.ok?'ok':'err'); if(d.ok) refresh();
-}
-
-async function doNewFolder(){
-  const n=document.getElementById('inp-folder').value.trim(); if(!n) return;
-  closeModal('modal-folder');
-  const r=await fetch('?action=newfolder',{method:'POST',headers:{'Content-Type':'application/json','X-Requested-With':'XMLHttpRequest'},body:JSON.stringify({path:currentPath,name:n})});
-  const d=await r.json(); toast(d.msg,d.ok?'ok':'err'); if(d.ok){document.getElementById('inp-folder').value='';refresh();}
-}
-async function doNewFile(){
-  const n=document.getElementById('inp-newfile').value.trim(); if(!n) return;
-  closeModal('modal-newfile');
-  const r=await fetch('?action=newfile',{method:'POST',headers:{'Content-Type':'application/json','X-Requested-With':'XMLHttpRequest'},body:JSON.stringify({path:currentPath,name:n})});
-  const d=await r.json(); toast(d.msg,d.ok?'ok':'err'); if(d.ok){document.getElementById('inp-newfile').value='';refresh();}
-}
-
-function handleDrop(e){e.preventDefault();document.getElementById('drop-zone').classList.remove('drag-over');handleFiles(e.dataTransfer.files);}
-function handleFiles(files){
-  uploadFiles=[...files];
-  document.getElementById('upload-list').innerHTML=uploadFiles.map((f,i)=>
-    `<div class="upload-item" id="uitem-${i}"><span>📄 ${f.name}</span><span style="color:var(--muted)">${fmtSz(f.size)}</span><span class="status" id="ustatus-${i}"></span></div>`
-  ).join('');
-  document.getElementById('btn-upload').disabled=uploadFiles.length===0;
-}
-function fmtSz(b){if(!b)return'0 B';const u=['B','KB','MB','GB'],i=Math.floor(Math.log(b)/Math.log(1024));return(b/Math.pow(1024,i)).toFixed(1)+' '+u[i];}
-async function doUpload(){
-  if(!uploadFiles.length) return; document.getElementById('btn-upload').disabled=true;
-  for(let i=0;i<uploadFiles.length;i++){
-    const fd=new FormData(); fd.append('path',currentPath); fd.append('files[]',uploadFiles[i]);
-    document.getElementById(`ustatus-${i}`).textContent='⏳';
-    const r=await fetch('?action=upload',{method:'POST',headers:{'X-Requested-With':'XMLHttpRequest'},body:fd});
-    const d=await r.json();
-    document.getElementById(`ustatus-${i}`).textContent=(d.ok&&d.results?.[0]?.ok)?'✅':'❌';
+function renderFiles(raw) {
+  if (!raw) {
+    document.getElementById('ftable-wrap').innerHTML = '<div class="msg">Bu dizin bos.</div>';
+    return;
   }
-  toast('Yükleme tamamlandı','ok'); refresh();
-}
+  var lines = raw.split('\n');
+  var rows  = '';
+  for (var i = 0; i < lines.length; i++) {
+    var l = lines[i].trim();
+    if (!l) continue;
+    var parts = l.split('|');
+    var type  = parts[0];
+    var name  = parts[1];
+    var path  = parts[2];
+    var size  = parts[3];
+    var date  = parts[4];
+    var icon  = type == 'D' ? '📁' : '📄';
+    var pe    = path.replace(/\\/g, '/').replace(/'/g, "\\'");
+    var ne    = name.replace(/</g,'&lt;').replace(/>/g,'&gt;');
 
-function toggleRow(chk,path){chk.checked?selectedRows.add(path):selectedRows.delete(path);updateSelBar();}
-function toggleAll(chk){selectedRows.clear();document.querySelectorAll('#file-body input[type=checkbox]').forEach(c=>{c.checked=chk.checked;if(chk.checked)selectedRows.add(c.dataset.path);});updateSelBar();}
-function clearSelection(){selectedRows.clear();document.querySelectorAll('input[type=checkbox]').forEach(c=>c.checked=false);updateSelBar();}
-function updateSelBar(){document.getElementById('sel-count').textContent=`${selectedRows.size} seçili`;document.getElementById('sel-bar').classList.toggle('visible',selectedRows.size>0);}
+    var nmClick = type == 'D' ?
+      'loadDir(\'' + pe + '\')' :
+      'openFile(\'' + pe + '\')';
 
-// ── SHELL ──────────────────────────────────────────────────
-const ROOT=<?=json_encode($root_real)?>;
-const TO=()=>document.getElementById('terminal-output');
-
-function updatePrompt(){
-  let d=shellCwd.replace(ROOT,'~'); if(!d.startsWith('~')) d='~'+d;
-  document.getElementById('cwd-display').textContent=shellCwd;
-  document.getElementById('prompt-path').textContent=d;
-}
-function appendLine(html){const e=document.createElement('div');e.innerHTML=html;TO().appendChild(e);TO().scrollTop=TO().scrollHeight;}
-function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>').replace(/ /g,'&nbsp;');}
-
-function appendPrompt(cmd){
-  let d=shellCwd.replace(ROOT,'~'); if(!d.startsWith('~')) d='~'+d;
-  const w=<?=json_encode($whoami)?>, h=<?=json_encode($hostname)?>;
-  appendLine(`<div class="t-line"><span class="t-prompt"><span class="uh">${esc(w)}</span><span class="at">@</span><span class="ho">${esc(h)}</span><span class="co">:</span><span class="pa">${esc(d)}</span><span class="do"> $ </span></span><span class="t-cmd">${esc(cmd)}</span></div>`);
-}
-
-async function runShell(){
-  const inp=document.getElementById('shell-input');
-  const cmd=inp.value.trim(); if(!cmd) return;
-  cmdHistory.unshift(cmd); if(cmdHistory.length>50) cmdHistory.pop(); histIdx=-1; inp.value='';
-  appendPrompt(cmd);
-  const r=await fetch('?action=shell',{method:'POST',headers:{'Content-Type':'application/json','X-Requested-With':'XMLHttpRequest'},body:JSON.stringify({cmd,cwd:shellCwd})});
-  const d=await r.json();
-  if(!d.ok){appendLine(`<div class="t-err">${esc(d.msg)}</div>`);return;}
-  if(d.cwd){shellCwd=d.cwd;updatePrompt();}
-  if(d.output) appendLine(`<div class="${d.code?'t-err':'t-out'}">${esc(d.output)}</div>`);
-  if(d.code&&d.code!==0) appendLine(`<div class="t-xer">exit ${d.code}</div>`);
-}
-
-function runQuick(cmd){switchTab('shell');document.getElementById('shell-input').value=cmd;runShell();}
-function clearTerminal(){TO().innerHTML='';}
-function copyOutput(){navigator.clipboard.writeText(TO().innerText).then(()=>toast('Kopyalandı','ok'));}
-
-document.addEventListener('keydown',e=>{
-  const inp=document.getElementById('shell-input');
-  const shellActive=document.getElementById('pane-shell')?.classList.contains('active');
-  if(shellActive&&document.activeElement===inp){
-    if(e.key==='Enter'){runShell();}
-    else if(e.key==='ArrowUp'){e.preventDefault();if(histIdx<cmdHistory.length-1){histIdx++;inp.value=cmdHistory[histIdx];}}
-    else if(e.key==='ArrowDown'){e.preventDefault();if(histIdx>0){histIdx--;inp.value=cmdHistory[histIdx];}else{histIdx=-1;inp.value='';}}
-    else if(e.ctrlKey&&e.key==='l'){e.preventDefault();clearTerminal();}
-    else if(e.ctrlKey&&e.key==='c'&&!window.getSelection().toString()){e.preventDefault();appendLine(`<span style="color:var(--muted)">^C</span>`);inp.value='';}
+    rows += '<tr data-name="' + ne.toLowerCase() + '">' +
+      '<td class="nm" onclick="' + nmClick + '">' + icon + ' ' + ne + '</td>' +
+      '<td class="sz">' + size + '</td>' +
+      '<td class="dt">' + date + '</td>' +
+      '<td class="ac">' +
+        (type == 'F' ? '<button onclick="openFile(\'' + pe + '\')">Duzenle</button>' : '') +
+        '<button onclick="renameUI(\'' + pe + '\',\'' + ne + '\')">Yeniden Adlandir</button>' +
+        '<button class="red" onclick="delUI(\'' + pe + '\',\'' + ne + '\',' + (type=='D'?'1':'0') + ')">Sil</button>' +
+      '</td></tr>';
   }
-  if(e.key==='Escape') document.querySelectorAll('.overlay.show').forEach(o=>o.classList.remove('show'));
-  if((e.ctrlKey||e.metaKey)&&e.key==='s'&&editorPath){e.preventDefault();saveFile();}
+
+  var html = '<table><thead><tr><th>Ad</th><th>Boyut</th><th>Tarih</th><th>Islem</th></tr></thead><tbody>' + rows + '</tbody></table>';
+  document.getElementById('ftable-wrap').innerHTML = html;
+}
+
+function filter(q) {
+  q = q.toLowerCase();
+  var rows = document.querySelectorAll('#ftable-wrap tbody tr');
+  for (var i = 0; i < rows.length; i++) {
+    var n = rows[i].getAttribute('data-name') || '';
+    rows[i].style.display = (!q || n.indexOf(q) >= 0) ? '' : 'none';
+  }
+}
+
+function openFile(p) {
+  ajax('?act=read&p=' + encodeURIComponent(p), null, function(res) {
+    editPath = p;
+    document.getElementById('editor-title').textContent = p;
+    document.getElementById('editor-area').value = res;
+    document.getElementById('editor').className = 'on';
+    document.getElementById('editor-area').focus();
+  });
+}
+
+function closeEditor() {
+  document.getElementById('editor').className = '';
+  editPath = '';
+}
+
+function saveFile() {
+  var content = document.getElementById('editor-area').value;
+  ajax('?act=save', {p: editPath, content: content}, function(res) {
+    if (res == 'OK') alert('Kaydedildi!');
+    else alert(res);
+  });
+}
+
+function delUI(path, name, isDir) {
+  var msg = '"' + name + '" ' + (isDir ? 'klasoru ve icerigini' : 'dosyasini') + ' silmek istediginize emin misiniz?';
+  if (!confirm(msg)) return;
+  ajax('?act=delete', {p: path}, function(res) {
+    if (res == 'OK') loadDir(curPath);
+    else alert(res);
+  });
+}
+
+function renameUI(path, name) {
+  showModal('Yeniden Adlandir', name, function(val) {
+    ajax('?act=rename', {p: path, newname: val}, function(res) {
+      if (res == 'OK') loadDir(curPath);
+      else alert(res);
+    });
+  });
+}
+
+function mkdirUI() {
+  showModal('Yeni Klasor Adi', '', function(val) {
+    ajax('?act=mkdir', {p: curPath, name: val}, function(res) {
+      if (res == 'OK') loadDir(curPath);
+      else alert(res);
+    });
+  });
+}
+
+function mkfileUI() {
+  showModal('Yeni Dosya Adi', '', function(val) {
+    ajax('?act=mkfile', {p: curPath, name: val}, function(res) {
+      if (res == 'OK') loadDir(curPath);
+      else alert(res);
+    });
+  });
+}
+
+function uploadUI() {
+  document.getElementById('upl-input').click();
+}
+
+function doUpload() {
+  var input = document.getElementById('upl-input');
+  if (!input.files.length) return;
+  var fd = new FormData();
+  fd.append('act', 'upload');
+  fd.append('p', curPath);
+  for (var i = 0; i < input.files.length; i++) {
+    fd.append('files[]', input.files[i]);
+  }
+  var xhr = new XMLHttpRequest();
+  xhr.open('POST', '', true);
+  xhr.onload = function() {
+    alert(xhr.responseText.indexOf('OK') == 0 ? 'Yuklendi!' : xhr.responseText);
+    loadDir(curPath);
+    input.value = '';
+  };
+  xhr.send(fd);
+}
+
+// ---- MODAL ----
+function showModal(title, val, cb) {
+  document.getElementById('modal-title').textContent = title;
+  document.getElementById('modal-inp').value = val;
+  document.getElementById('modal').className = 'on';
+  document.getElementById('modal-inp').focus();
+  document.getElementById('modal-inp').select();
+  modalCb = cb;
+}
+
+function closeModal() {
+  document.getElementById('modal').className = '';
+  modalCb = null;
+}
+
+function modalOK() {
+  var val = document.getElementById('modal-inp').value.trim();
+  if (!val) return;
+  closeModal();
+  if (modalCb) modalCb(val);
+}
+
+// ---- SHELL ----
+function appendTerm(html) {
+  var out = document.getElementById('term-out');
+  var d = document.createElement('div');
+  d.innerHTML = html;
+  out.appendChild(d);
+  out.scrollTop = out.scrollHeight;
+}
+
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function updatePrompt() {
+  var root = <?php echo "'" . addslashes($ROOT) . "'"; ?>;
+  var show = shellCwd.replace(root, '~') || '~';
+  document.getElementById('term-prompt').innerHTML = '<span class="t-ps">$ </span><span class="t-pt">' + escHtml(show) + '</span> ';
+}
+
+function runCmd() {
+  var inp = document.getElementById('term-in');
+  var cmd = inp.value.trim();
+  if (!cmd) return;
+  cmdHist.unshift(cmd);
+  histIdx = -1;
+  inp.value = '';
+
+  var root = <?php echo "'" . addslashes($ROOT) . "'"; ?>;
+  var show = shellCwd.replace(root, '~') || '~';
+  appendTerm('<span class="t-ps">$ </span><span class="t-pt">' + escHtml(show) + '</span> ' + escHtml(cmd));
+
+  var fd = new FormData();
+  fd.append('act', 'shell');
+  fd.append('cmd', cmd);
+  fd.append('cwd', shellCwd);
+  var xhr = new XMLHttpRequest();
+  xhr.open('POST', '', true);
+  xhr.onload = function() {
+    var res  = xhr.responseText;
+    var cwdM = res.lastIndexOf('\nCWD:');
+    var newCwd = null;
+    var out    = res;
+    if (cwdM >= 0) {
+      newCwd = res.substring(cwdM + 5).trim();
+      out    = res.substring(0, cwdM);
+    } else if (res.indexOf('CWD:') === 0) {
+      newCwd = res.substring(4).trim();
+      out    = '';
+    }
+    if (newCwd) { shellCwd = newCwd; updatePrompt(); }
+    if (out.trim()) appendTerm('<span class="t-er">' + escHtml(out) + '</span>');
+  };
+  xhr.send(fd);
+}
+
+function qcmd(cmd) {
+  showTab('shell');
+  document.getElementById('term-in').value = cmd;
+  runCmd();
+}
+
+function clearTerm() {
+  document.getElementById('term-out').innerHTML = '';
+}
+
+// ---- KEYBOARD ----
+document.addEventListener('keydown', function(e) {
+  var inp = document.getElementById('term-in');
+  if (document.getElementById('pane-shell').className == 'on' && document.activeElement == inp) {
+    if (e.keyCode == 13) { runCmd(); }
+    else if (e.keyCode == 38) { e.preventDefault(); if (histIdx < cmdHist.length-1) { histIdx++; inp.value = cmdHist[histIdx]; } }
+    else if (e.keyCode == 40) { e.preventDefault(); if (histIdx > 0) { histIdx--; inp.value = cmdHist[histIdx]; } else { histIdx=-1; inp.value=''; } }
+    else if (e.keyCode == 76 && e.ctrlKey) { e.preventDefault(); clearTerm(); }
+  }
+  if (e.keyCode == 27) {
+    closeModal();
+    closeEditor();
+  }
+  if (e.keyCode == 83 && (e.ctrlKey || e.metaKey) && editPath) {
+    e.preventDefault();
+    saveFile();
+  }
 });
 
-function showModal(id){document.getElementById(id).classList.add('show');}
-function closeModal(idOrEl){const e=typeof idOrEl==='string'?document.getElementById(idOrEl):idOrEl;if(e?.classList.contains('overlay'))e.classList.remove('show');}
-let toastTimer;
-function toast(msg,type='ok'){const e=document.getElementById('toast');e.textContent=(type==='ok'?'✓ ':'✗ ')+msg;e.className='show '+type;clearTimeout(toastTimer);toastTimer=setTimeout(()=>e.className='',3000);}
-
-// ── INIT ───────────────────────────────────────────────────
-navigate('');
+// ---- INIT ----
+loadDir('');
 updatePrompt();
-appendLine(`<div style="color:var(--muted);line-height:1.9;padding:2px 0"><span style="color:var(--success)">✓</span> Terminal hazır &nbsp;—&nbsp; <span style="color:var(--accent)"><?=htmlspecialchars($whoami)?>@<?=htmlspecialchars($hostname)?></span><br><span style="font-size:11px">↑↓ geçmiş &nbsp;·&nbsp; Ctrl+L temizle &nbsp;·&nbsp; Ctrl+C iptal &nbsp;·&nbsp; Kök: ${ROOT}</span></div>`);
+appendTerm('<span style="color:#6c7086">Terminal hazir. Root: ' + escHtml(<?php echo "'" . addslashes($ROOT) . "'"; ?>) + '  |  Ctrl+L temizle  |  yukari/asagi gecmis</span>');
 </script>
 </body>
 </html>
